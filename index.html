@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+<title>Intendance — Jehan Froissart</title>
+<meta name="theme-color" content="#2B2824"/>
+<link rel="manifest" href="manifest.json"/>
+<link rel="icon" href="icon-192.png"/>
+<link rel="apple-touch-icon" href="icon-192.png"/>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}
+  .font-serif{font-family:Georgia,'Times New Roman',serif;}
+  .font-mono{font-family:'SF Mono',Consolas,monospace;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Polyfill du stockage : remplace window.storage (API artifacts) par localStorage -->
+<script>
+  window.storage = {
+    get: async (key, shared) => {
+      const v = localStorage.getItem(key);
+      return v !== null ? { key, value: v, shared: !!shared } : null;
+    },
+    set: async (key, value, shared) => {
+      localStorage.setItem(key, value);
+      return { key, value, shared: !!shared };
+    },
+    delete: async (key, shared) => {
+      localStorage.removeItem(key);
+      return { key, deleted: true, shared: !!shared };
+    },
+    list: async (prefix, shared) => {
+      const keys = Object.keys(localStorage).filter(k => !prefix || k.startsWith(prefix));
+      return { keys, prefix, shared: !!shared };
+    }
+  };
+</script>
+
+<script type="text/babel" data-presets="react" src="app.jsx"></script>
+<script type="text/babel" data-presets="react">
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<App/>);
+</script>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('service-worker.js').catch(()=>{});
+    });
+  }
+</script>
+</body>
+</html>

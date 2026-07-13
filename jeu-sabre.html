@@ -139,8 +139,12 @@
   const GOAL_X = LEVEL_W - 60;
 
   // ---------- État ----------
-  const state = { mode:'title', time:0, cam:0, best:0 };
-  let player, troopers, bolts, sparks, msg, msgT;
+  const state = { mode:'title', time:0, cam:0, best:0, shake:0, hitstop:0 };
+  let player, troopers, bolts, sparks, saberTrail, msg, msgT;
+
+  // Paramètres du sabre
+  const ATTACK_DUR = 15, ATTACK_CD = 10;
+  const SABER_LEN = 22, SABER_REST = -1.15;
 
   function resetWorld(){
     player = {
@@ -160,8 +164,10 @@
     }));
     bolts = [];
     sparks = [];
+    saberTrail = [];
     msg = ''; msgT = 0;
     killCount = 0;
+    state.shake = 0; state.hitstop = 0;
   }
 
   function start(){
@@ -197,6 +203,39 @@
     return px>=r.x && px<=r.x+r.w && py>=r.y && py<=r.y+r.h;
   }
 
+  // Angle de la lame : balaie un arc (haut-arrière → bas-avant) pendant la frappe
+  function saberAngle(){
+    if (player.attack<=0) return SABER_REST;
+    const t = 1 - player.attack/ATTACK_DUR;   // 0 → 1 le long du geste
+    const e = t*t*(3-2*t);                     // lissage (smoothstep)
+    return -2.15 + e*2.8;
+  }
+  // Segment de lame en coordonnées monde
+  function saberSeg(){
+    const p = player;
+    const gx = p.face>0 ? p.x+p.w : p.x;
+    const gy = p.y+10;
+    const a = saberAngle(), d = p.face;
+    return { gx, gy, tx: gx+Math.cos(a)*SABER_LEN*d, ty: gy+Math.sin(a)*SABER_LEN };
+  }
+  // Fenêtre active : milieu du geste
+  function saberActive(){ return player.attack>2 && player.attack<ATTACK_DUR-2; }
+  // Points échantillonnés le long de la lame (pour la détection sur tout l'arc)
+  function bladePts(seg){
+    const pts=[];
+    for(let i=0.35;i<=1.001;i+=0.16)
+      pts.push({x:seg.gx+(seg.tx-seg.gx)*i, y:seg.gy+(seg.ty-seg.gy)*i});
+    return pts;
+  }
+  function nearestTrooper(x,y){
+    let best=null, bd=1e9;
+    for(const t of troopers){ if(!t.alive) continue;
+      const dx=t.x+t.w/2-x, dy=t.y+t.h/2-y, d=dx*dx+dy*dy;
+      if(d<bd){ bd=d; best=t; } }
+    return best;
+  }
+  function kick(m){ state.shake = Math.min(6, Math.max(state.shake, m)); }
+
   // ---------- Boucle ----------
   function update(){
     const p = player;
@@ -229,23 +268,32 @@
     // Attaque au sabre
     if (p.attackCd>0) p.attackCd--;
     if (keys.attack && p.attack<=0 && p.attackCd<=0){
-      p.attack = 12; p.attackCd = 16;
+      p.attack = ATTACK_DUR; p.attackCd = ATTACK_DUR + ATTACK_CD;
     }
     if (p.attack>0) p.attack--;
     if (p.invuln>0) p.invuln--;
 
-    const swinging = p.attack>6;   // fenêtre active de la lame
-    const blade = saberHitbox();
+    const seg = saberSeg();
+    const active = p.attack>0 && saberActive();
+    const bpts = active ? bladePts(seg) : null;
+
+    // Traînée lumineuse : on enregistre la position de la lame pendant le geste
+    if (p.attack>0){
+      saberTrail.push({ gx:seg.gx, gy:seg.gy, tx:seg.tx, ty:seg.ty, life:9 });
+    }
+    for (const tr of saberTrail) tr.life--;
+    saberTrail = saberTrail.filter(tr=>tr.life>0);
 
     // Troopers
     for (const t of troopers){
       if (!t.alive){ continue; }
       if (t.hit>0) t.hit--;
+      if (!active) t.hitLock = false;      // ré-armé entre deux gestes
       // patrouille
       t.x += 0.4*t.dir;
       if (t.x<20){ t.x=20; t.dir=1; }
       if (t.x>LEVEL_W-32){ t.x=LEVEL_W-32; t.dir=-1; }
-      // vise le joueur s'il est proche et à l'écran
+      // vise le joueur s'il est proche
       const dx = p.x - t.x;
       if (Math.abs(dx) < 150){
         t.dir = Math.sign(dx) || t.dir;
@@ -257,12 +305,14 @@
           spark(bx, t.y+8, '#ff4d4d', 3);
         }
       }
-      // frappé par le sabre
-      if (swinging && overlap(blade, t)){
-        t.hp--; t.hit=8;
-        spark(t.x+t.w/2, t.y+t.h/2, '#8fe3ff', 8);
-        p.vx += -2*p.face; // léger recul
-        if (t.hp<=0){ t.alive=false; spark(t.x+6,t.y+10,'#ffffff',14); addMsgKill(); }
+      // frappé par le sabre : lame testée sur tout l'arc, un dégât par geste
+      if (active && !t.hitLock &&
+          bpts.some(pt=>pointInRect(pt.x,pt.y,{x:t.x,y:t.y,w:t.w,h:t.h}))){
+        t.hp--; t.hit=8; t.hitLock=true;
+        spark(t.x+t.w/2, t.y+t.h/2, '#8fe3ff', 10);
+        p.vx += -1.6*p.face;
+        kick(3); state.hitstop = Math.max(state.hitstop, 3);
+        if (t.hp<=0){ t.alive=false; spark(t.x+6,t.y+10,'#ffffff',16); kick(5); state.hitstop=6; addMsgKill(); }
       }
       // contact direct : dégâts
       if (t.alive && p.invuln<=0 && overlap(p,t)){
@@ -273,10 +323,17 @@
     // Bolts
     for (const b of bolts){
       b.x += b.vx; b.y += b.vy; b.life--;
-      // renvoi par le sabre
-      if (swinging && b.from==='trooper' && pointInRect(b.x,b.y,blade)){
-        b.from='player'; b.vx = 3.2*p.face; b.vy = (Math.random()-0.5)*1.2;
-        spark(b.x,b.y,'#bff7ff',8);
+      // renvoi intelligent : la lame dévie le tir vers le trooper le plus proche
+      if (active && b.from==='trooper' &&
+          bpts.some(pt=>Math.hypot(pt.x-b.x, pt.y-b.y)<6)){
+        b.from='player';
+        const sp = 3.8, tg = nearestTrooper(b.x,b.y);
+        if (tg){
+          const ddx=tg.x+tg.w/2-b.x, ddy=tg.y+tg.h/2-b.y, m=Math.hypot(ddx,ddy)||1;
+          b.vx = ddx/m*sp; b.vy = ddy/m*sp;
+        } else { b.vx = sp*p.face; b.vy = (Math.random()-0.5)*1.2; }
+        spark(b.x,b.y,'#bff7ff',10);
+        kick(2); state.hitstop = Math.max(state.hitstop, 2);
       }
       // touche le joueur
       if (b.from==='trooper' && p.invuln<=0 &&
@@ -288,8 +345,8 @@
         for (const t of troopers){
           if (t.alive && b.x>t.x && b.x<t.x+t.w && b.y>t.y && b.y<t.y+t.h){
             b.life=0; t.hp-=2; t.hit=8;
-            spark(t.x+6,t.y+10,'#8fe3ff',10);
-            if (t.hp<=0){ t.alive=false; spark(t.x+6,t.y+10,'#fff',14); addMsgKill(); }
+            spark(t.x+6,t.y+10,'#8fe3ff',10); kick(3);
+            if (t.hp<=0){ t.alive=false; spark(t.x+6,t.y+10,'#fff',14); state.hitstop=Math.max(state.hitstop,5); addMsgKill(); }
           }
         }
       }
@@ -415,32 +472,32 @@
       ctx.fillRect(x+4, y+16, 2, 6); ctx.fillRect(x+7, y+16, 2, 6); // jambes
     }
     // Sabre laser
-    const swinging = p.attack>0;
-    const gripX = p.face>0 ? x+p.w-1 : x-1;
-    const gripY = y+9;
-    ctx.fillStyle='#c9ccd4'; // manche
-    ctx.fillRect(gripX-1, gripY, 3, 4);
+    ctx.lineCap='round';
+    // Traînée lumineuse (de la plus ancienne à la plus récente)
     if (p.saberOn){
-      const len = 20;
-      const active = p.attack>6;
-      // angle : haut au repos, horizontal pendant frappe
-      let ang = active ? 0 : -1.15;
-      if (swinging && !active) ang = -0.5;
-      const dir = p.face;
-      const bx = gripX+1, by = gripY+1;
-      const ex = bx + Math.cos(ang)*len*dir;
-      const ey = by + Math.sin(ang)*len;
-      // halo
-      ctx.strokeStyle='rgba(120,240,160,0.35)';
-      ctx.lineWidth=6; ctx.lineCap='round';
+      for (const tr of saberTrail){
+        const a = tr.life/9;
+        ctx.strokeStyle = 'rgba(130,245,170,'+(a*0.45).toFixed(3)+')';
+        ctx.lineWidth = 1.5 + a*2.5;
+        ctx.beginPath();
+        ctx.moveTo(px(tr.gx), tr.gy); ctx.lineTo(px(tr.tx), tr.ty);
+        ctx.stroke();
+      }
+    }
+    // Manche + lame courante
+    const seg = saberSeg();
+    const bx = px(seg.gx), by = seg.gy, ex = px(seg.tx), ey = seg.ty;
+    ctx.fillStyle='#c9ccd4';
+    ctx.fillRect(bx-1, by-2, 3, 5);
+    if (p.saberOn){
+      ctx.strokeStyle='rgba(120,240,160,0.35)'; ctx.lineWidth=6;
       ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(ex,ey); ctx.stroke();
-      // coeur de lame
-      ctx.strokeStyle='#eafff0'; ctx.lineWidth=2;
+      ctx.strokeStyle='#4dff8a'; ctx.lineWidth=3.4; ctx.globalAlpha=0.75;
       ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(ex,ey); ctx.stroke();
-      ctx.strokeStyle='#4dff8a'; ctx.lineWidth=3.4;
-      ctx.globalAlpha=0.7;
+      ctx.globalAlpha=1;
+      ctx.strokeStyle='#eafff0'; ctx.lineWidth=1.6;
       ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(ex,ey); ctx.stroke();
-      ctx.globalAlpha=1; ctx.lineWidth=1;
+      ctx.lineWidth=1;
     }
   }
 
@@ -514,10 +571,17 @@
   function loop(){
     state.time++;
     if (state.mode==='play'){
-      update();
-      drawBg(); drawPlatforms();
+      if (state.hitstop>0) state.hitstop--; else update();
+      drawBg();                        // fond plein écran (non secoué)
+      ctx.save();
+      if (state.shake>0.3){
+        ctx.translate((Math.random()-0.5)*state.shake, (Math.random()-0.5)*state.shake);
+      }
+      drawPlatforms();
       troopers.forEach(drawTrooper);
       drawBolts(); drawPlayer(); drawSparks();
+      ctx.restore();
+      state.shake *= 0.82;
       drawHud();
     } else if (state.mode==='title'){
       drawScreen('SABRE & ÉTOILES', 'Appuie sur ESPACE ou touche l\'écran',

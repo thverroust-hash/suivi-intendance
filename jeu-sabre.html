@@ -244,6 +244,10 @@
   const DIVE_DUR = 22;       // durée du coup plongeant
   // Roulade (double saut esquive)
   const ROLL_DUR = 16, ROLL_SPEED = 4.8, ROLL_JUMP = 5.2;
+  // Stormtroopers
+  const DETECT = 150;        // distance de détection
+  const AIM_TIME = 24;       // temps de visée télégraphié avant le tir (~0,4 s)
+  const BOLT_SPEED = 2.4;
 
   function resetWorld(){
     player = {
@@ -261,7 +265,11 @@
     ];
     spots.forEach(s => troopers.push({
       x:s.x, y:GROUND-22, w:12, h:22, vx:0, dir:s.dir,
-      hp:2, shootCd:60 + Math.random()*60, alive:true, hit:0
+      hp:2, alive:true, hit:0, aim:0,
+      shootCd:60 + Math.random()*60,
+      shootGap:70 + Math.random()*70,   // cadence propre
+      prefDist:58 + Math.random()*45,   // distance de tir préférée
+      spd:0.3 + Math.random()*0.35      // vitesse de repositionnement
     }));
     bolts = [];
     sparks = [];
@@ -456,22 +464,34 @@
       if (!t.alive){ continue; }
       if (t.hit>0) t.hit--;
       if (!active) t.hitLock = false;      // ré-armé entre deux gestes
-      // patrouille
-      t.x += 0.4*t.dir;
+
+      const dx = p.x - t.x, adx = Math.abs(dx);
+      if (adx < DETECT){
+        // --- En alerte : garde ses distances puis vise avant de tirer ---
+        t.dir = Math.sign(dx) || t.dir;
+        if (t.aim>0){
+          // visée : immobile, télégraphe visuel, puis tir
+          t.aim--;
+          if (t.aim===0){
+            const bx = t.x + (t.dir>0 ? t.w : 0);
+            boltSpawn(bx, t.y+8, BOLT_SPEED*t.dir, 0, 'trooper');
+            spark(bx, t.y+8, '#ff4d4d', 4);
+            t.shootCd = t.shootGap;
+          }
+        } else {
+          // manœuvre pour tenir sa distance de tir préférée
+          if (adx < t.prefDist-12)      t.x -= t.spd*Math.sign(dx);  // recule si trop près
+          else if (adx > t.prefDist+12) t.x += t.spd*Math.sign(dx);  // avance si trop loin
+          t.shootCd--;
+          // ne dégaine pas collé au joueur : il recule d'abord
+          if (t.shootCd<=0 && adx > 40) t.aim = AIM_TIME;
+        }
+      } else {
+        // --- Patrouille tranquille ---
+        t.x += 0.4*t.dir;
+      }
       if (t.x<20){ t.x=20; t.dir=1; }
       if (t.x>LEVEL_W-32){ t.x=LEVEL_W-32; t.dir=-1; }
-      // vise le joueur s'il est proche
-      const dx = p.x - t.x;
-      if (Math.abs(dx) < 150){
-        t.dir = Math.sign(dx) || t.dir;
-        t.shootCd--;
-        if (t.shootCd<=0){
-          t.shootCd = 90 + Math.random()*50;
-          const bx = t.x + (t.dir>0? t.w: 0);
-          boltSpawn(bx, t.y+8, 2.4*t.dir, 0, 'trooper');
-          spark(bx, t.y+8, '#ff4d4d', 3);
-        }
-      }
       // frappé par le sabre : lame testée sur tout l'arc, un impact par geste
       if (active && !t.hitLock &&
           bpts.some(pt=>pointInRect(pt.x,pt.y,{x:t.x,y:t.y,w:t.w,h:t.h}))){
@@ -634,8 +654,19 @@
     ctx.fillRect(x+8, y+18, 2, 4);
     // blaster
     ctx.fillStyle='#2a2f3a';
+    const muzzle = t.dir>0 ? x+15 : x-3;
     if (t.dir>0) ctx.fillRect(x+10, y+11, 5, 2);
     else ctx.fillRect(x-3, y+11, 5, 2);
+    // télégraphe de tir : lueur rouge qui grossit au canon pendant la visée
+    if (t.aim>0){
+      const c = 1 - t.aim/AIM_TIME;           // 0 → 1 à mesure que le tir approche
+      const r = 1.5 + c*3;
+      ctx.globalAlpha = 0.35 + 0.55*c;
+      ctx.fillStyle = '#ff5a4d';
+      ctx.beginPath(); ctx.arc(muzzle, y+12, r, 0, Math.PI*2); ctx.fill();
+      if (c>0.7){ ctx.fillStyle='#ffd0c0'; ctx.beginPath(); ctx.arc(muzzle, y+12, r*0.5, 0, Math.PI*2); ctx.fill(); }
+      ctx.globalAlpha = 1;
+    }
   }
 
   function drawPlayer(){

@@ -39,31 +39,42 @@
   /* Commandes tactiles */
   #touch{
     display:none;
-    position:fixed; bottom:0; left:0; right:0;
-    justify-content:space-between;
-    padding:14px 18px calc(14px + env(safe-area-inset-bottom));
+    position:fixed; left:0; right:0; bottom:0;
+    justify-content:space-between; align-items:flex-end;
+    padding:0 20px calc(28px + env(safe-area-inset-bottom));
     pointer-events:none;
   }
-  #touch .cluster{ display:flex; gap:14px; pointer-events:auto; }
+  #touch .cluster{ display:flex; align-items:flex-end; gap:28px; pointer-events:auto; }
   .btn{
-    width:64px; height:64px; border-radius:50%;
-    background:rgba(30,45,75,.55);
+    width:78px; height:78px; border-radius:50%;
+    background:rgba(30,45,75,.5);
     border:2px solid rgba(90,140,220,.5);
-    color:#dbe8ff; font-size:26px;
+    color:#dbe8ff; font-size:32px;
     display:flex; align-items:center; justify-content:center;
     backdrop-filter:blur(2px);
-    touch-action:none;
+    box-shadow:0 3px 14px rgba(0,0,0,.35);
+    position:relative; touch-action:none;
+    transition:transform .05s;
   }
-  .btn:active, .btn.on{ background:rgba(70,120,220,.7); }
-  .btn.saber{ background:rgba(40,90,60,.6); border-color:rgba(90,230,140,.6); }
-  .btn.saber:active,.btn.saber.on{ background:rgba(60,180,100,.8); }
+  .btn:active, .btn.on{ background:rgba(70,120,220,.75); transform:scale(.93); }
+  .btn.saber{ background:rgba(40,90,60,.55); border-color:rgba(90,230,140,.6); }
+  .btn.saber:active,.btn.saber.on{ background:rgba(60,180,100,.85); }
+  .btn .sub{
+    position:absolute; bottom:8px; font-size:9px; letter-spacing:.5px;
+    color:rgba(200,220,255,.7); font-family:'Courier New',monospace;
+  }
   @media (pointer:coarse){ #touch{ display:flex; } }
+  /* petits écrans : boutons un peu plus compacts */
+  @media (pointer:coarse) and (max-width:360px){
+    .btn{ width:66px; height:66px; font-size:27px; }
+    #touch .cluster{ gap:18px; }
+  }
 </style>
 </head>
 <body>
 <div id="wrap">
   <canvas id="game" width="320" height="180"></canvas>
-  <div class="hint">← → déplacer &nbsp;·&nbsp; ESPACE / ↑ sauter &nbsp;·&nbsp; J / K frapper (enchaîne pour un combo ×3) &nbsp;·&nbsp; frappe en l'air = piqué &nbsp;·&nbsp; renvoie les tirs</div>
+  <div class="hint">← → déplacer &nbsp;·&nbsp; ESPACE / ↑ sauter (2ᵉ appui = roulade d'esquive) &nbsp;·&nbsp; J frapper (enchaîne = combo ×3) &nbsp;·&nbsp; frappe en l'air = piqué &nbsp;·&nbsp; renvoie les tirs</div>
 </div>
 
 <div id="touch">
@@ -73,7 +84,7 @@
   </div>
   <div class="cluster">
     <div class="btn saber" data-k="attack">⚔</div>
-    <div class="btn" data-k="jump">▲</div>
+    <div class="btn" data-k="jump">▲<span class="sub">roulade</span></div>
   </div>
 </div>
 
@@ -153,13 +164,16 @@
   ];
   const COMBO_WINDOW = 16;   // frames pour enchaîner après un geste
   const DIVE_DUR = 22;       // durée du coup plongeant
+  // Roulade (double saut esquive)
+  const ROLL_DUR = 16, ROLL_SPEED = 4.8, ROLL_JUMP = 5.2;
 
   function resetWorld(){
     player = {
       x:30, y:GROUND-26, w:12, h:22, vx:0, vy:0,
       onGround:false, face:1, hp:5, maxhp:5,
       attack:0, attackCd:0, attackDur:ATTACK_DUR, invuln:0, saberOn:true,
-      combo:0, comboWindow:0, comboShow:0, diving:false, prevAtk:false
+      combo:0, comboWindow:0, comboShow:0, diving:false, prevAtk:false,
+      rolling:0, airUsed:false, prevJump:false
     };
     troopers = [];
     const spots = [
@@ -261,12 +275,32 @@
     const p = player;
 
     // Déplacement
-    if (keys.left){ p.vx -= MOVE; p.face=-1; }
-    if (keys.right){ p.vx += MOVE; p.face=1; }
-    p.vx *= FRICTION;
-    if (Math.abs(p.vx) > 3) p.vx = 3*Math.sign(p.vx);
+    if (p.rolling>0){
+      // pendant la roulade : l'élan est conservé, le contrôle est réduit
+      p.vx *= 0.94;
+    } else {
+      if (keys.left){ p.vx -= MOVE; p.face=-1; }
+      if (keys.right){ p.vx += MOVE; p.face=1; }
+      p.vx *= FRICTION;
+      if (Math.abs(p.vx) > 3) p.vx = 3*Math.sign(p.vx);
+    }
 
-    if (keys.jump && p.onGround){ p.vy = -JUMP; p.onGround=false; }
+    // Saut, et double saut en roulade (esquive)
+    const jumpEdge = keys.jump && !p.prevJump;
+    p.prevJump = keys.jump;
+    if (p.onGround) p.airUsed = false;
+    if (jumpEdge){
+      if (p.onGround){ p.vy = -JUMP; p.onGround=false; }
+      else if (!p.airUsed && !p.diving){
+        p.airUsed = true; p.rolling = ROLL_DUR;
+        const dir = keys.left ? -1 : keys.right ? 1 : p.face;
+        p.face = dir;
+        p.vx = ROLL_SPEED*dir; p.vy = -ROLL_JUMP;
+        p.invuln = Math.max(p.invuln, ROLL_DUR+4);   // i-frames d'esquive
+        spark(p.x+p.w/2, p.y+p.h, '#bcd4ff', 8);
+      }
+    }
+    if (p.rolling>0) p.rolling--;
     p.vy += GRAV; if (p.vy>10) p.vy=10;
 
     p.x += p.vx;
@@ -310,7 +344,7 @@
       if (!p.onGround && !p.diving){
         // coup plongeant
         p.diving=true; p.attack=DIVE_DUR; p.attackDur=DIVE_DUR;
-        p.combo=0; p.comboWindow=0;
+        p.combo=0; p.comboWindow=0; p.rolling=0;   // annule une roulade en cours
         p.vy = Math.max(p.vy, 5.5); p.vx *= 0.4;
       } else if (p.onGround){
         // combo au sol : enchaîne si la fenêtre est ouverte
@@ -524,6 +558,18 @@
 
   function drawPlayer(){
     const p=player, x=px(p.x), y=p.y;
+    if (p.rolling>0){
+      // Roulade : le corps tourne sur lui-même (sabre rangé)
+      const cx = x+p.w/2, cy = y+p.h/2;
+      const ang = (1 - p.rolling/ROLL_DUR) * Math.PI*2 * p.face;
+      ctx.save();
+      ctx.translate(cx, cy); ctx.rotate(ang);
+      ctx.fillStyle='#6b4a2a'; ctx.fillRect(-5,-5,10,10);   // corps roulé
+      ctx.fillStyle='#8a6238'; ctx.fillRect(-4,-4,8,5);
+      ctx.fillStyle='#e8c9a0'; ctx.fillRect(-2,-4,5,4);     // tête
+      ctx.restore();
+      return;   // pas de sabre pendant l'esquive
+    }
     if (p.invuln>0 && p.invuln%6<3){ /* clignote */ } else {
       // cape / tunique
       ctx.fillStyle='#6b4a2a'; ctx.fillRect(x+1, y+6, 10, 12);   // robe

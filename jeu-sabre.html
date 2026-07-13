@@ -229,7 +229,7 @@
 
   // ---------- État ----------
   const state = { mode:'title', time:0, cam:0, best:0, shake:0, hitstop:0 };
-  let player, troopers, bolts, sparks, saberTrail, msg, msgT;
+  let player, troopers, bolts, sparks, saberTrail, pickups, msg, msgT;
 
   // Paramètres du sabre
   const ATTACK_DUR = 15, ATTACK_CD = 10;
@@ -244,10 +244,32 @@
   const DIVE_DUR = 22;       // durée du coup plongeant
   // Roulade (double saut esquive)
   const ROLL_DUR = 16, ROLL_SPEED = 4.8, ROLL_JUMP = 5.2;
-  // Stormtroopers
+  // Ennemis
   const DETECT = 150;        // distance de détection
   const AIM_TIME = 24;       // temps de visée télégraphié avant le tir (~0,4 s)
   const BOLT_SPEED = 2.4;
+  // Bonus
+  const FURY_TIME = 360;     // durée du mode Fureur (~6 s)
+
+  function addTrooper(x,dir){
+    troopers.push({ type:'trooper', x, y:GROUND-22, w:12, h:22, dir,
+      hp:2, alive:true, hit:0, hitLock:false, aim:0,
+      shootCd:60+Math.random()*60, shootGap:70+Math.random()*70,
+      prefDist:58+Math.random()*45, spd:0.3+Math.random()*0.35 });
+  }
+  function addDroid(x,y){
+    troopers.push({ type:'droid', x, y, baseY:y, w:14, h:11, dir:-1,
+      hp:2, alive:true, hit:0, hitLock:false, aim:0,
+      shootCd:70+Math.random()*80, phase:Math.random()*6.28 });
+  }
+  function addBoss(x){
+    troopers.push({ type:'boss', x, y:GROUND-30, w:18, h:30, dir:-1,
+      hp:11, maxhp:11, alive:true, hit:0, hitLock:false,
+      state:'approach', stateT:70, atkCd:80, swingT:0 });
+  }
+  function addPickup(x,y,type,grounded){
+    pickups.push({ x, y, type, w:10, h:10, vy:0, grounded:!!grounded, phase:Math.random()*6.28, dead:false });
+  }
 
   function resetWorld(){
     player = {
@@ -255,22 +277,23 @@
       onGround:false, face:1, hp:5, maxhp:5,
       attack:0, attackCd:0, attackDur:ATTACK_DUR, invuln:0, saberOn:true,
       combo:0, comboWindow:0, comboShow:0, diving:false, prevAtk:false,
-      rolling:0, airUsed:false, prevJump:false
+      rolling:0, airUsed:false, prevJump:false, fury:0
     };
     troopers = [];
-    const spots = [
-      {x:300,dir:-1},{x:470,dir:1},{x:640,dir:-1},{x:790,dir:1},
-      {x:920,dir:-1},{x:1080,dir:1},{x:1210,dir:-1},{x:1360,dir:1},
-      {x:1480,dir:-1}
-    ];
-    spots.forEach(s => troopers.push({
-      x:s.x, y:GROUND-22, w:12, h:22, vx:0, dir:s.dir,
-      hp:2, alive:true, hit:0, aim:0,
-      shootCd:60 + Math.random()*60,
-      shootGap:70 + Math.random()*70,   // cadence propre
-      prefDist:58 + Math.random()*45,   // distance de tir préférée
-      spd:0.3 + Math.random()*0.35      // vitesse de repositionnement
-    }));
+    // Stormtroopers au sol
+    [ [300,-1],[470,1],[640,-1],[920,-1],[1080,1],[1360,1] ]
+      .forEach(s => addTrooper(s[0], s[1]));
+    // Droïdes volants
+    addDroid(560, 72); addDroid(1000, 60); addDroid(1240, 78);
+    // Boss gardien de la porte
+    addBoss(LEVEL_W - 150);
+
+    pickups = [];
+    // Bonus disséminés dans le niveau
+    addPickup(255, 88, 'heal', true);
+    addPickup(845, 96, 'fury', true);
+    addPickup(1125, 92, 'heal', true);
+
     bolts = [];
     sparks = [];
     saberTrail = [];
@@ -332,7 +355,8 @@
     const gx = p.face>0 ? p.x+p.w : p.x;
     const gy = p.y+10;
     const a = saberAngle(), d = p.face;
-    const len = (p.attack>0 && !p.diving && COMBO[p.combo]) ? COMBO[p.combo].len : SABER_LEN;
+    let len = (p.attack>0 && !p.diving && COMBO[p.combo]) ? COMBO[p.combo].len : SABER_LEN;
+    if (p.fury>0) len += 6;   // lame allongée en Fureur
     return { gx, gy, tx: gx+Math.cos(a)*len*d, ty: gy+Math.sin(a)*len };
   }
   // Fenêtre active : tout le piqué, ou le milieu du geste au sol
@@ -356,6 +380,117 @@
     return best;
   }
   function kick(m){ state.shake = Math.min(6, Math.max(state.shake, m)); }
+  function bossAlive(){ return troopers.some(t => t.type==='boss' && t.alive); }
+
+  // ---------- IA des ennemis ----------
+  function aiTrooper(t){
+    const dx = player.x - t.x, adx = Math.abs(dx);
+    if (adx < DETECT){
+      t.dir = Math.sign(dx) || t.dir;
+      if (t.aim>0){
+        if (--t.aim === 0){
+          const bx = t.x + (t.dir>0 ? t.w : 0);
+          boltSpawn(bx, t.y+8, BOLT_SPEED*t.dir, 0, 'trooper');
+          spark(bx, t.y+8, '#ff4d4d', 4);
+          t.shootCd = t.shootGap;
+        }
+      } else {
+        if (adx < t.prefDist-12)      t.x -= t.spd*Math.sign(dx);   // recule si trop près
+        else if (adx > t.prefDist+12) t.x += t.spd*Math.sign(dx);   // avance si trop loin
+        if (--t.shootCd<=0 && adx>40) t.aim = AIM_TIME;             // pas de tir collé
+      }
+    } else {
+      t.x += 0.4*t.dir;
+    }
+    if (t.x<20){ t.x=20; t.dir=1; }
+    if (t.x>LEVEL_W-32){ t.x=LEVEL_W-32; t.dir=-1; }
+  }
+
+  function aiDroid(t){
+    t.phase += 0.05;
+    t.y = t.baseY + Math.sin(t.phase)*10;   // vol sinusoïdal
+    const dx = player.x - t.x, adx = Math.abs(dx);
+    t.dir = Math.sign(dx) || t.dir;
+    if (adx < DETECT+40){
+      const want = 88;
+      if (adx < want-10) t.x -= 0.55*Math.sign(dx);
+      else if (adx > want+10) t.x += 0.65*Math.sign(dx);
+      if (t.aim>0){
+        if (--t.aim === 0){
+          const bx = t.x+t.w/2, by = t.y+t.h;
+          const ddx = player.x+player.w/2-bx, ddy = player.y+8-by, m = Math.hypot(ddx,ddy)||1;
+          boltSpawn(bx, by, ddx/m*2.6, ddy/m*2.6, 'trooper');   // tir en piqué visé
+          spark(bx, by, '#ff4d4d', 4);
+          t.shootCd = 100+Math.random()*70;
+        }
+      } else if (--t.shootCd<=0){ t.aim = AIM_TIME; }
+    }
+    if (t.x<20) t.x=20;
+    if (t.x>LEVEL_W-32) t.x=LEVEL_W-32;
+  }
+
+  function aiBoss(t){
+    const dx = player.x - t.x, adx = Math.abs(dx);
+    t.dir = Math.sign(dx) || t.dir;
+    if (t.stateT>0) t.stateT--;
+    switch(t.state){
+      case 'approach':
+        if (adx>26) t.x += 0.75*Math.sign(dx);
+        if (t.atkCd>0) t.atkCd--;
+        if (t.atkCd<=0 && adx<42){ t.state='wind'; t.stateT=22; }        // amorce d'attaque
+        else if (t.stateT<=0){ t.state='guard'; t.stateT=70+Math.random()*45; }
+        break;
+      case 'wind':
+        if (t.stateT<=0){ t.state='attack'; t.stateT=12; t.swingT=12; t.atkCd=95+Math.random()*40; }
+        break;
+      case 'attack':
+        if (t.swingT>0) t.swingT--;
+        if (t.stateT<=0) t.state='approach';
+        break;
+      case 'guard':
+        if (t.stateT<=0){ t.state='approach'; t.atkCd=Math.min(t.atkCd,25); }
+        break;
+    }
+    if (t.x<20) t.x=20;
+    if (t.x>LEVEL_W-24) t.x=LEVEL_W-24;
+    // dégâts de la frappe du boss
+    if (t.state==='attack' && t.swingT>5 && player.invuln<=0){
+      const box = t.dir>0 ? {x:t.x+t.w, y:t.y+4, w:22, h:t.h} : {x:t.x-22, y:t.y+4, w:22, h:t.h};
+      if (overlap(player, box)){ hurt(1); player.vx = 5*t.dir; player.vy = -3; }
+    }
+  }
+
+  // Mort d'un ennemi + butin éventuel
+  function dropLoot(t){
+    const r = Math.random();
+    if (r < 0.22) addPickup(t.x+t.w/2-5, t.y, 'heal');
+    else if (r < 0.32) addPickup(t.x+t.w/2-5, t.y, 'fury');
+  }
+  function onEnemyDeath(t){
+    t.alive = false;
+    addMsgKill();
+    if (t.type==='boss'){
+      spark(t.x+t.w/2, t.y+t.h/2, '#ffffff', 30); kick(7);
+      state.hitstop = Math.max(state.hitstop, 10);
+      banner('GARDE VAINCU — LA VOIE EST LIBRE');
+      addPickup(t.x+t.w/2-5, t.y, 'heal');
+    } else {
+      spark(t.x+t.w/2, t.y+t.h/2, '#ffffff', 16); kick(5);
+      state.hitstop = Math.max(state.hitstop, 6);
+      dropLoot(t);
+    }
+  }
+  function applyPickup(k){
+    if (k.type==='heal'){
+      if (player.hp<player.maxhp){ player.hp++; banner('SOIN +1'); }
+      else banner('PLEINE VIE');
+      spark(player.x+player.w/2, player.y+8, '#7dff9a', 12);
+    } else {
+      player.fury = FURY_TIME; banner('FUREUR DU SABRE !');
+      spark(player.x+player.w/2, player.y+8, '#5cc8ff', 16);
+      kick(3);
+    }
+  }
 
   // ---------- Boucle ----------
   function update(){
@@ -459,98 +594,93 @@
     for (const tr of saberTrail) tr.life--;
     saberTrail = saberTrail.filter(tr=>tr.life>0);
 
-    // Troopers
+    // Ennemis
+    const fury = p.fury>0;
     for (const t of troopers){
       if (!t.alive){ continue; }
       if (t.hit>0) t.hit--;
       if (!active) t.hitLock = false;      // ré-armé entre deux gestes
 
-      const dx = p.x - t.x, adx = Math.abs(dx);
-      if (adx < DETECT){
-        // --- En alerte : garde ses distances puis vise avant de tirer ---
-        t.dir = Math.sign(dx) || t.dir;
-        if (t.aim>0){
-          // visée : immobile, télégraphe visuel, puis tir
-          t.aim--;
-          if (t.aim===0){
-            const bx = t.x + (t.dir>0 ? t.w : 0);
-            boltSpawn(bx, t.y+8, BOLT_SPEED*t.dir, 0, 'trooper');
-            spark(bx, t.y+8, '#ff4d4d', 4);
-            t.shootCd = t.shootGap;
-          }
-        } else {
-          // manœuvre pour tenir sa distance de tir préférée
-          if (adx < t.prefDist-12)      t.x -= t.spd*Math.sign(dx);  // recule si trop près
-          else if (adx > t.prefDist+12) t.x += t.spd*Math.sign(dx);  // avance si trop loin
-          t.shootCd--;
-          // ne dégaine pas collé au joueur : il recule d'abord
-          if (t.shootCd<=0 && adx > 40) t.aim = AIM_TIME;
-        }
-      } else {
-        // --- Patrouille tranquille ---
-        t.x += 0.4*t.dir;
-      }
-      if (t.x<20){ t.x=20; t.dir=1; }
-      if (t.x>LEVEL_W-32){ t.x=LEVEL_W-32; t.dir=-1; }
+      // IA selon le type
+      if (t.type==='droid')      aiDroid(t);
+      else if (t.type==='boss')  aiBoss(t);
+      else                        aiTrooper(t);
+
       // frappé par le sabre : lame testée sur tout l'arc, un impact par geste
       if (active && !t.hitLock &&
           bpts.some(pt=>pointInRect(pt.x,pt.y,{x:t.x,y:t.y,w:t.w,h:t.h}))){
-        t.hit=8; t.hitLock=true;
-        if (p.diving){
+        t.hitLock = true;
+        // Le boss en garde bloque les coups au sol (mais pas le piqué aérien)
+        const guarding = t.type==='boss' && t.state==='guard' && !p.diving;
+        if (guarding){
+          t.hit = 4;
+          spark(t.x + (t.dir>0?t.w:0), t.y+10, '#ffd24d', 8);
+          kick(2); p.vx += 2.2*p.face;   // rebond : le coup est paré
+        } else if (p.diving){
           // piqué : rebond façon pogo + gros dégâts
-          t.hp-=2;
+          t.hp -= 2 + (fury?1:0); t.hit=8;
           p.vy = -JUMP*0.72; p.diving=false; p.attack=0; p.attackCd=4;
           spark(t.x+t.w/2, t.y, '#bff7ff', 12);
           kick(4); state.hitstop = Math.max(state.hitstop,4);
         } else {
-          const power = COMBO[p.combo].power;
-          t.hp -= power ? 2 : 1;
+          t.hit=8;
+          const power = COMBO[p.combo] && COMBO[p.combo].power;
+          t.hp -= (power ? 2 : 1) + (fury?1:0);
           p.vx += (power ? -3 : -1.6)*p.face;
           kick(power ? 5 : 3);
           state.hitstop = Math.max(state.hitstop, power ? 5 : 3);
-          spark(t.x+t.w/2, t.y+t.h/2, '#8fe3ff', power ? 14 : 10);
+          spark(t.x+t.w/2, t.y+t.h/2, fury?'#5cc8ff':'#8fe3ff', power ? 14 : 10);
         }
-        if (t.hp<=0){ t.alive=false; spark(t.x+6,t.y+10,'#ffffff',16); kick(5); state.hitstop=Math.max(state.hitstop,6); addMsgKill(); }
+        if (t.hp<=0) onEnemyDeath(t);
       }
-      // contact direct : dégâts (sauf pendant un piqué, où l'on frappe d'en haut)
-      if (t.alive && !p.diving && p.invuln<=0 && overlap(p,t)){
+      // contact direct : dégâts (sauf pendant un piqué ou une roulade)
+      if (t.alive && !p.diving && p.rolling<=0 && p.invuln<=0 && overlap(p,t)){
         hurt(1); p.vx = 4*Math.sign(p.x-t.x || 1);
       }
     }
 
     // Bolts
+    const pcx = p.x+p.w/2, pcy = p.y+p.h/2;
     for (const b of bolts){
       b.x += b.vx; b.y += b.vy; b.life--;
-      // renvoi intelligent : la lame dévie le tir vers le trooper le plus proche
-      if (active && b.from==='trooper' &&
-          bpts.some(pt=>Math.hypot(pt.x-b.x, pt.y-b.y)<6)){
+      // renvoi par la lame — ou renvoi automatique en mode Fureur (rayon autour du héros)
+      const deflect = b.from==='trooper' &&
+        ((active && bpts.some(pt=>Math.hypot(pt.x-b.x, pt.y-b.y)<6)) ||
+         (fury && Math.hypot(b.x-pcx, b.y-pcy) < 26));
+      if (deflect){
         b.from='player';
         const sp = 3.8, tg = nearestTrooper(b.x,b.y);
         if (tg){
           const ddx=tg.x+tg.w/2-b.x, ddy=tg.y+tg.h/2-b.y, m=Math.hypot(ddx,ddy)||1;
           b.vx = ddx/m*sp; b.vy = ddy/m*sp;
         } else { b.vx = sp*p.face; b.vy = (Math.random()-0.5)*1.2; }
-        spark(b.x,b.y,'#bff7ff',10);
+        spark(b.x,b.y, fury?'#bfeaff':'#bff7ff', 10);
         kick(2); state.hitstop = Math.max(state.hitstop, 2);
       }
       // touche le joueur
-      if (b.from==='trooper' && p.invuln<=0 &&
+      if (b.from==='trooper' && p.invuln<=0 && p.rolling<=0 &&
           b.x>p.x && b.x<p.x+p.w && b.y>p.y && b.y<p.y+p.h){
         b.life=0; hurt(1);
       }
-      // bolt renvoyé touche un trooper
+      // bolt renvoyé touche un ennemi
       if (b.from==='player'){
         for (const t of troopers){
           if (t.alive && b.x>t.x && b.x<t.x+t.w && b.y>t.y && b.y<t.y+t.h){
             b.life=0; t.hp-=2; t.hit=8;
             spark(t.x+6,t.y+10,'#8fe3ff',10); kick(3);
-            if (t.hp<=0){ t.alive=false; spark(t.x+6,t.y+10,'#fff',14); state.hitstop=Math.max(state.hitstop,5); addMsgKill(); }
+            if (t.hp<=0) onEnemyDeath(t);
           }
         }
       }
-      if (b.x<0||b.x>LEVEL_W) b.life=0;
+      if (b.x<0||b.x>LEVEL_W || b.y<-8 || b.y>H+8) b.life=0;
     }
     bolts = bolts.filter(b=>b.life>0);
+
+    // Bonus
+    updatePickups();
+
+    // Fureur
+    if (p.fury>0) p.fury--;
 
     // Sparks
     for (const s of sparks){ s.x+=s.vx; s.y+=s.vy; s.vy+=0.08; s.life--; }
@@ -562,12 +692,35 @@
     // Bannière
     if (msgT>0) msgT--;
 
-    // Victoire / défaite
+    // Victoire / défaite — la porte reste verrouillée tant que le boss vit
     if (p.x+p.w >= GOAL_X){
-      state.mode='win';
-      state.best = Math.max(state.best, aliveKilled());
+      if (!bossAlive()){
+        state.mode='win';
+        state.best = Math.max(state.best, aliveKilled());
+      } else if (msgT<=0){
+        banner('VAINCS LE GARDE !');
+      }
     }
     if (p.hp<=0){ state.mode='dead'; }
+  }
+
+  function updatePickups(){
+    const p = player;
+    for (const k of pickups){
+      if (!k.grounded){
+        k.vy += 0.4; k.y += k.vy;
+        for (const pl of platforms){
+          if (k.x+k.w>pl.x && k.x<pl.x+pl.w &&
+              k.y+k.h>pl.y && k.y+k.h < pl.y+pl.h+12 && k.vy>=0){
+            k.y = pl.y-k.h; k.vy=0; k.grounded=true;
+          }
+        }
+        if (k.y>H+30) k.dead=true;
+      }
+      k.phase += 0.12;
+      if (overlap(p, {x:k.x-4, y:k.y-4, w:k.w+8, h:k.h+8})){ applyPickup(k); k.dead=true; }
+    }
+    pickups = pickups.filter(k=>!k.dead);
   }
 
   let killCount=0;
@@ -630,13 +783,18 @@
     // porte de sortie
     const gx=px(GOAL_X);
     if (gx<W+40){
+      const locked = bossAlive();
       ctx.fillStyle='#1a2338'; ctx.fillRect(gx, GROUND-40, 26, 40);
-      ctx.fillStyle='#5ce0ff';
       const glow = 0.5+0.5*Math.sin(state.time*0.1);
-      ctx.globalAlpha=0.5+glow*0.5;
+      ctx.fillStyle = locked ? '#e0483c' : '#5ce0ff';   // rouge verrouillée / bleue ouverte
+      ctx.globalAlpha = locked ? 0.35 : 0.5+glow*0.5;
       ctx.fillRect(gx+4, GROUND-36, 18, 34);
       ctx.globalAlpha=1;
       ctx.fillStyle='#0a0f1e'; ctx.fillRect(gx+10, GROUND-20, 6, 6);
+      if (locked){   // cadenas symbolique
+        ctx.fillStyle='#e0483c';
+        ctx.fillRect(gx+10, GROUND-24, 6, 5); ctx.fillRect(gx+11, GROUND-27, 4, 3);
+      }
     }
   }
 
@@ -669,6 +827,108 @@
     }
   }
 
+  function drawEnemy(t){
+    if (t.type==='droid') drawDroid(t);
+    else if (t.type==='boss') drawBoss(t);
+    else drawTrooper(t);
+  }
+
+  function drawDroid(t){
+    const x=px(t.x), y=t.y;
+    if (x<-18||x>W+18) return;
+    const flash = t.hit>0 && (t.hit%4<2);
+    // lueur de propulsion
+    ctx.globalAlpha=0.4; ctx.fillStyle='#3aa0ff';
+    ctx.beginPath(); ctx.arc(x+t.w/2, y+t.h/2, 9, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+    // coque
+    ctx.fillStyle = flash ? '#ffb0b0' : '#9aa8bd';
+    ctx.fillRect(x+2, y+2, 10, 6);
+    ctx.fillStyle='#6b7688'; ctx.fillRect(x, y+4, 14, 3);   // anneau
+    // œil rouge
+    ctx.fillStyle='#ff4d4d'; ctx.fillRect(x+ (t.dir>0?9:3), y+3, 3, 3);
+    // canon + télégraphe (tir vers le bas)
+    const mx=x+t.w/2, my=y+t.h;
+    ctx.fillStyle='#2a2f3a'; ctx.fillRect(mx-1, my-1, 2, 3);
+    if (t.aim>0){
+      const c=1-t.aim/AIM_TIME, r=1.5+c*3;
+      ctx.globalAlpha=0.35+0.55*c; ctx.fillStyle='#ff5a4d';
+      ctx.beginPath(); ctx.arc(mx, my+1, r, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha=1;
+    }
+  }
+
+  function drawBoss(t){
+    const x=px(t.x), y=t.y;
+    if (x<-40||x>W+40) return;
+    const flash = t.hit>0 && (t.hit%4<2);
+    // cape sombre
+    ctx.fillStyle = flash ? '#7a3b3b' : '#241a2e';
+    ctx.fillRect(x, y+8, t.w, t.h-8);
+    ctx.fillStyle = flash ? '#8a4a4a' : '#151019';
+    ctx.fillRect(x+3, y+8, t.w-6, t.h-10);
+    // tête casquée
+    ctx.fillStyle='#0d0a12'; ctx.fillRect(x+4, y, t.w-8, 9);
+    ctx.fillStyle='#c0202a'; ctx.fillRect(x+6, y+3, t.w-12, 2);   // visière rouge
+    // jambes
+    ctx.fillStyle='#0d0a12';
+    ctx.fillRect(x+4, y+t.h-4, 3, 4); ctx.fillRect(x+t.w-7, y+t.h-4, 3, 4);
+    // Sabre rouge : position selon l'état
+    const gx = t.dir>0 ? x+t.w : x;
+    const gy = y+12;
+    let a;
+    if (t.state==='guard')       a = t.dir>0 ? -1.15 : -1.15;      // levé en garde
+    else if (t.state==='wind')   a = -2.2;                          // armé au-dessus
+    else if (t.state==='attack') a = 0.5;                           // abattu devant
+    else                          a = -0.7;                          // au repos
+    const len=20, d=t.dir;
+    const ex = gx + Math.cos(a)*len*d, ey = gy + Math.sin(a)*len;
+    ctx.fillStyle='#c9ccd4'; ctx.fillRect(gx-1, gy-1, 3, 4);       // manche
+    ctx.lineCap='round';
+    ctx.strokeStyle='rgba(255,60,60,0.35)'; ctx.lineWidth=6;
+    ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(ex,ey); ctx.stroke();
+    ctx.strokeStyle='#ff3b3b'; ctx.lineWidth=3.2; ctx.globalAlpha=0.8;
+    ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(ex,ey); ctx.stroke();
+    ctx.globalAlpha=1;
+    ctx.strokeStyle='#ffd9d9'; ctx.lineWidth=1.4;
+    ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(ex,ey); ctx.stroke();
+    ctx.lineWidth=1;
+    // bouclier de garde
+    if (t.state==='guard'){
+      ctx.globalAlpha=0.25+0.15*Math.sin(state.time*0.3);
+      ctx.strokeStyle='#ffd24d'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(x+t.w/2, y+t.h/2, 15, 0, Math.PI*2); ctx.stroke();
+      ctx.globalAlpha=1; ctx.lineWidth=1;
+    }
+    // barre de vie du boss
+    const bw=t.w+8, bx=x-4, by=y-7;
+    ctx.fillStyle='#3a1420'; ctx.fillRect(bx, by, bw, 3);
+    ctx.fillStyle='#ff4d6a'; ctx.fillRect(bx, by, bw*Math.max(0,t.hp)/t.maxhp, 3);
+  }
+
+  function drawPickups(){
+    for (const k of pickups){
+      const x=px(k.x), y=k.y + Math.sin(k.phase)*2;
+      if (x<-12||x>W+12) continue;
+      const heal = k.type==='heal';
+      const col = heal ? '#7dff9a' : '#5cc8ff';
+      // halo
+      ctx.globalAlpha=0.35+0.2*Math.sin(k.phase*2);
+      ctx.fillStyle=col;
+      ctx.beginPath(); ctx.arc(x+k.w/2, y+k.h/2, 8, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha=1;
+      // cristal (losange)
+      ctx.save();
+      ctx.translate(x+k.w/2, y+k.h/2); ctx.rotate(Math.PI/4);
+      ctx.fillStyle=col; ctx.fillRect(-4,-4,8,8);
+      ctx.fillStyle='#ffffff'; ctx.fillRect(-2,-2,3,3);
+      ctx.restore();
+      // symbole
+      ctx.fillStyle='#06210f';
+      if (heal){ ctx.fillRect(x+4, y+2, 2, 6); ctx.fillRect(x+2, y+4, 6, 2); } // croix
+    }
+  }
+
   function drawPlayer(){
     const p=player, x=px(p.x), y=p.y;
     if (p.rolling>0){
@@ -683,6 +943,14 @@
       ctx.restore();
       return;   // pas de sabre pendant l'esquive
     }
+    const fury = p.fury>0;
+    // Aura de Fureur autour du héros
+    if (fury){
+      ctx.globalAlpha = 0.18 + 0.1*Math.sin(state.time*0.4);
+      ctx.fillStyle = '#5cc8ff';
+      ctx.beginPath(); ctx.arc(x+p.w/2, y+p.h/2, 14, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
     if (p.invuln>0 && p.invuln%6<3){ /* clignote */ } else {
       // cape / tunique
       ctx.fillStyle='#6b4a2a'; ctx.fillRect(x+1, y+6, 10, 12);   // robe
@@ -692,13 +960,18 @@
       ctx.fillStyle='#3a2818';
       ctx.fillRect(x+4, y+16, 2, 6); ctx.fillRect(x+7, y+16, 2, 6); // jambes
     }
+    // Couleurs de lame (verte, ou bleue en Fureur)
+    const cTrail = fury ? '160,215,255' : '130,245,170';
+    const cGlow  = fury ? '90,200,255'  : '120,240,160';
+    const cCore  = fury ? '#5cc8ff' : '#4dff8a';
+    const cHot   = fury ? '#eaf7ff' : '#eafff0';
     // Sabre laser
     ctx.lineCap='round';
     // Traînée lumineuse (épaisseur variable selon le coup)
     if (p.saberOn){
       for (const tr of saberTrail){
         const a = tr.life/9, w = tr.tw || 1;
-        ctx.strokeStyle = 'rgba(130,245,170,'+(a*0.45).toFixed(3)+')';
+        ctx.strokeStyle = 'rgba('+cTrail+','+(a*0.45).toFixed(3)+')';
         ctx.lineWidth = (1.5 + a*2.5) * w;
         ctx.beginPath();
         ctx.moveTo(px(tr.gx), tr.gy); ctx.lineTo(px(tr.tx), tr.ty);
@@ -712,12 +985,12 @@
     ctx.fillStyle='#c9ccd4';
     ctx.fillRect(bx-1, by-2, 3, 5);
     if (p.saberOn){
-      ctx.strokeStyle='rgba(120,240,160,'+(0.3+0.12*(w-1)).toFixed(3)+')'; ctx.lineWidth=6*w;
+      ctx.strokeStyle='rgba('+cGlow+','+(0.3+0.12*(w-1)).toFixed(3)+')'; ctx.lineWidth=6*w;
       ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(ex,ey); ctx.stroke();
-      ctx.strokeStyle='#4dff8a'; ctx.lineWidth=3.4*w; ctx.globalAlpha=0.75;
+      ctx.strokeStyle=cCore; ctx.lineWidth=3.4*w; ctx.globalAlpha=0.75;
       ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(ex,ey); ctx.stroke();
       ctx.globalAlpha=1;
-      ctx.strokeStyle='#eafff0'; ctx.lineWidth=1.6*Math.min(w,1.3);
+      ctx.strokeStyle=cHot; ctx.lineWidth=1.6*Math.min(w,1.3);
       ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(ex,ey); ctx.stroke();
       ctx.lineWidth=1;
     }
@@ -752,6 +1025,14 @@
       const hx=6+i*12, hy=6;
       ctx.fillRect(hx+1,hy,3,3); ctx.fillRect(hx+5,hy,3,3);
       ctx.fillRect(hx,hy+2,9,3); ctx.fillRect(hx+2,hy+5,5,2); ctx.fillRect(hx+3,hy+7,3,1);
+    }
+    // jauge de Fureur
+    if (player.fury>0){
+      const fw=54, fx=6, fy=18;
+      ctx.fillStyle='#123049'; ctx.fillRect(fx, fy, fw, 4);
+      ctx.fillStyle='#5cc8ff'; ctx.fillRect(fx, fy, fw*player.fury/FURY_TIME, 4);
+      ctx.fillStyle='#bfe8ff'; ctx.font='7px "Courier New"'; ctx.textAlign='left';
+      ctx.fillText('FUREUR', fx, fy+11);
     }
     // vaincus
     ctx.fillStyle='#8fe3ff'; ctx.font='8px "Courier New"'; ctx.textAlign='right';
@@ -809,14 +1090,15 @@
         ctx.translate((Math.random()-0.5)*state.shake, (Math.random()-0.5)*state.shake);
       }
       drawPlatforms();
-      troopers.forEach(drawTrooper);
+      drawPickups();
+      troopers.forEach(drawEnemy);
       drawBolts(); drawPlayer(); drawSparks();
       ctx.restore();
       state.shake *= 0.82;
       drawHud();
     } else if (state.mode==='title'){
       drawScreen('SABRE & ÉTOILES', 'Appuie sur ESPACE ou touche l\'écran',
-                 'Enchaîne les combos · pique en l\'air · renvoie les tirs');
+                 'Ramasse les cristaux · terrasse le garde · ouvre la porte');
     } else if (state.mode==='win'){
       drawScreen('PORTE ATTEINTE !', 'Troopers vaincus : '+killCount,
                  'ESPACE / écran pour rejouer');

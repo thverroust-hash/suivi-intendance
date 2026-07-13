@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
-<title>Sabre &amp; Étoiles — Jeu de plateforme</title>
+<title>Sabre &amp; Étoiles — Castlevania-like sabre laser</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body{
@@ -64,15 +64,17 @@
     box-shadow:0 2px 12px rgba(0,0,0,.4);
   }
   /* Boutons d'action (à droite) */
-  .cluster{
-    position:absolute; right:20px; bottom:calc(28px + env(safe-area-inset-bottom));
-    display:flex; align-items:flex-end; gap:24px; pointer-events:auto;
+  #actions{
+    position:absolute; right:20px; bottom:calc(24px + env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; gap:12px; align-items:flex-end;
+    pointer-events:auto;
   }
+  #actions .row{ display:flex; gap:20px; justify-content:flex-end; }
   .btn{
-    width:78px; height:78px; border-radius:50%;
+    width:76px; height:76px; border-radius:50%;
     background:rgba(30,45,75,.5);
     border:2px solid rgba(90,140,220,.5);
-    color:#dbe8ff; font-size:32px;
+    color:#dbe8ff; font-size:30px;
     display:flex; align-items:center; justify-content:center;
     backdrop-filter:blur(2px);
     box-shadow:0 3px 14px rgba(0,0,0,.35);
@@ -82,6 +84,9 @@
   .btn:active, .btn.on{ background:rgba(70,120,220,.75); transform:scale(.93); }
   .btn.saber{ background:rgba(40,90,60,.55); border-color:rgba(90,230,140,.6); }
   .btn.saber:active,.btn.saber.on{ background:rgba(60,180,100,.85); }
+  .btn.sm{ width:56px; height:56px; font-size:22px; }
+  .btn.pow{ background:rgba(35,60,110,.55); border-color:rgba(110,180,255,.6); }
+  .btn.pow:active,.btn.pow.on{ background:rgba(70,130,230,.85); }
   .btn .sub{
     position:absolute; bottom:8px; font-size:9px; letter-spacing:.5px;
     color:rgba(200,220,255,.7); font-family:'Courier New',monospace;
@@ -100,8 +105,9 @@
   @media (pointer:coarse){ #touch{ display:block; } }
   /* petits écrans : boutons un peu plus compacts */
   @media (pointer:coarse) and (max-width:360px){
-    .btn{ width:66px; height:66px; font-size:27px; }
-    .cluster{ gap:18px; }
+    .btn{ width:64px; height:64px; font-size:26px; }
+    .btn.sm{ width:48px; height:48px; font-size:19px; }
+    #actions .row{ gap:14px; }
   }
 </style>
 </head>
@@ -109,7 +115,7 @@
 <div id="mute" title="Son (M)">🔊</div>
 <div id="wrap">
   <canvas id="game" width="320" height="180"></canvas>
-  <div class="hint">← → déplacer &nbsp;·&nbsp; ESPACE sauter (2ᵉ appui = roulade) &nbsp;·&nbsp; J frapper (combo ×3, aussi en saut) &nbsp;·&nbsp; ↓+J = piqué &nbsp;·&nbsp; M = son</div>
+  <div class="hint">← → bouger · ESPACE sauter (×2 = roulade) · J frapper (combo ×3, ↓+J = piqué) · K pouvoir · L lame boomerang · M son</div>
 </div>
 
 <div id="touch">
@@ -117,9 +123,15 @@
     <div class="padhint">◄ glisse le pouce pour te déplacer ►</div>
     <div id="stick"><div id="knob"></div></div>
   </div>
-  <div class="cluster">
-    <div class="btn saber" data-k="attack">⚔</div>
-    <div class="btn" data-k="jump">▲<span class="sub">roulade</span></div>
+  <div id="actions">
+    <div class="row">
+      <div class="btn sm pow" data-k="power">⚡</div>
+      <div class="btn sm pow" data-k="throw">🌀</div>
+    </div>
+    <div class="row">
+      <div class="btn saber" data-k="attack">⚔</div>
+      <div class="btn" data-k="jump">▲<span class="sub">roulade</span></div>
+    </div>
   </div>
 </div>
 
@@ -143,6 +155,23 @@
       musicGain = ac.createGain(); musicGain.gain.value = 0.5; musicGain.connect(master);
     }
     function resume(){ ensure(); if (ac && ac.state==='suspended') ac.resume(); }
+    function tone(freq, dur, type, vol, slideTo){
+      if (muted || !ac) return;
+      const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+      o.type = type||'square'; o.frequency.setValueAtTime(freq, t);
+      if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20,slideTo), t+dur);
+      g.gain.setValueAtTime(vol||0.3, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t+dur);
+      o.connect(g); g.connect(master); o.start(t); o.stop(t+dur+0.02);
+    }
+    function noise(dur, vol){
+      if (muted || !ac) return;
+      const n = Math.floor(ac.sampleRate*dur), buf = ac.createBuffer(1,n,ac.sampleRate), d = buf.getChannelData(0);
+      for (let i=0;i<n;i++) d[i] = (Math.random()*2-1)*(1-i/n);
+      const s = ac.createBufferSource(); s.buffer = buf;
+      const g = ac.createGain(); g.gain.value = vol||0.2;
+      s.connect(g); g.connect(master); s.start();
+    }
     // Note de musique (douce, routée sous les effets)
     function mtone(freq, dur, vol){
       if (muted || !ac) return;
@@ -171,23 +200,6 @@
       if (mStep%8===2) mtone(ch.arp[2]*2, 0.14, 0.22); // accent aigu
       mStep = (mStep+1) % 16;
     }
-    function tone(freq, dur, type, vol, slideTo){
-      if (muted || !ac) return;
-      const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
-      o.type = type||'square'; o.frequency.setValueAtTime(freq, t);
-      if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20,slideTo), t+dur);
-      g.gain.setValueAtTime(vol||0.3, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t+dur);
-      o.connect(g); g.connect(master); o.start(t); o.stop(t+dur+0.02);
-    }
-    function noise(dur, vol){
-      if (muted || !ac) return;
-      const n = Math.floor(ac.sampleRate*dur), buf = ac.createBuffer(1,n,ac.sampleRate), d = buf.getChannelData(0);
-      for (let i=0;i<n;i++) d[i] = (Math.random()*2-1)*(1-i/n);
-      const s = ac.createBufferSource(); s.buffer = buf;
-      const g = ac.createGain(); g.gain.value = vol||0.2;
-      s.connect(g); g.connect(master); s.start();
-    }
     return {
       resume, tick, setMuted(m){ muted=m; }, isMuted(){ return muted; },
       swing(){ tone(330,0.12,'sawtooth',0.10,150); },
@@ -197,9 +209,16 @@
       shoot(fast){ tone(fast?920:700,0.09,'square',0.12, fast?220:320); },
       hurt(){ tone(220,0.24,'sawtooth',0.28,70); noise(0.08,0.14); },
       pickup(){ tone(620,0.09,'triangle',0.22,900); setTimeout(()=>tone(980,0.12,'triangle',0.2,1300),70); },
+      shard(){ tone(1050,0.06,'triangle',0.14,1500); },
       jump(){ tone(300,0.11,'square',0.12,620); },
       roll(){ noise(0.12,0.12); tone(260,0.12,'sawtooth',0.08,420); },
       burst(){ tone(120,0.3,'sawtooth',0.32,50); noise(0.24,0.22); },
+      power(){ tone(240,0.22,'sawtooth',0.22,880); noise(0.1,0.1); },
+      throwS(){ tone(560,0.16,'sawtooth',0.14,240); },
+      uiMove(){ tone(480,0.05,'square',0.08,520); },
+      uiSel(){ tone(660,0.08,'triangle',0.16,900); },
+      buy(){ tone(520,0.1,'triangle',0.2,780); setTimeout(()=>tone(1040,0.14,'triangle',0.18,1400),80); },
+      err(){ tone(150,0.16,'square',0.16,90); },
       win(){ [523,659,784,1047].forEach((f,i)=>setTimeout(()=>tone(f,0.18,'triangle',0.22),i*110)); },
       lose(){ [400,300,200].forEach((f,i)=>setTimeout(()=>tone(f,0.26,'sawtooth',0.22,f*0.6),i*150)); }
     };
@@ -214,30 +233,70 @@
     muteBtn.addEventListener('touchend', e => { e.preventDefault(); toggleMute(); }, {passive:false});
   }
 
+  // ---------- Sauvegarde persistante (méta-progression) ----------
+  const SAVE_KEY = 'sabre-etoiles-save';
+  let save = { crystals:0, upHp:0, upDmg:0, upForce:0, chars:{kael:true}, bestRank:'', runs:0 };
+  try{
+    const s = localStorage.getItem(SAVE_KEY);
+    if (s){ const d = JSON.parse(s); save = Object.assign(save, d); save.chars = Object.assign({kael:true}, d.chars||{}); }
+  }catch(e){}
+  function persist(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }catch(e){} }
+
+  // ---------- Personnages jouables ----------
+  const CHARS = {
+    kael: { id:'kael', name:'KAEL', cls:'Chevalier Jedi', cost:0,
+      hp:5, spd:1, atkScale:1, dmgBonus:0,
+      col:{ core:'#4dff8a', hot:'#eafff0', glow:'120,240,160', trail:'130,245,170' },
+      body:{ robe:'#6b4a2a', torso:'#8a6238', legs:'#3a2818', hair:'#4a3420' },
+      power:{ id:'wave', name:'ONDE DE FORCE', cost:40, desc:'Repousse tout, renvoie les tirs' } },
+    vex: { id:'vex', name:'VEX', cls:'Duelliste', cost:150,
+      hp:4, spd:1.18, atkScale:0.85, dmgBonus:0,
+      col:{ core:'#c77dff', hot:'#f3e6ff', glow:'190,130,255', trail:'200,140,255' },
+      body:{ robe:'#3a2f4a', torso:'#54467a', legs:'#241d33', hair:'#20182e' },
+      power:{ id:'dash', name:'FRAPPE ÉCLAIR', cost:35, desc:'Ruée tranchante invulnérable' } },
+    torr: { id:'torr', name:'TORR', cls:'Gardien', cost:250,
+      hp:7, spd:0.85, atkScale:1.1, dmgBonus:1,
+      col:{ core:'#ffb84d', hot:'#fff3e0', glow:'255,190,100', trail:'255,200,120' },
+      body:{ robe:'#5a3a22', torso:'#8a5a2e', legs:'#33200f', hair:'#9a6a34' },
+      power:{ id:'quake', name:'SÉISME', cost:45, desc:'Choc au sol, étourdit tout' } }
+  };
+  const CHAR_IDS = ['kael','vex','torr'];
+
+  // ---------- Atelier (améliorations permanentes) ----------
+  const SHOP = [
+    { k:'upHp',    name:'CŒUR RENFORCÉ', costs:[60,120,200],
+      desc:['+1 cœur max','+1 cœur max','+1 cœur max'] },
+    { k:'upDmg',   name:'LAME AFFÛTÉE',  costs:[60,120,200],
+      desc:['Moulinet +1 dégât','Piqué +1 dégât','Toutes frappes +1'] },
+    { k:'upForce', name:'FLUX DE FORCE', costs:[50,100,180],
+      desc:['+25 énergie max','+25 énergie max','+25 énergie max'] }
+  ];
+
   // ---------- Entrées ----------
-  const keys = { left:false, right:false, jump:false, attack:false, down:false };
+  const keys = { left:false, right:false, jump:false, attack:false, down:false, power:false, throw:false };
   const keyMap = {
-    ArrowLeft:'left', KeyA:'left',
+    ArrowLeft:'left', KeyA:'left', KeyQ:'left',
     ArrowRight:'right', KeyD:'right',
-    ArrowUp:'jump', KeyW:'jump', Space:'jump',
+    ArrowUp:'jump', KeyW:'jump', KeyZ:'jump', Space:'jump',
     ArrowDown:'down', KeyS:'down',
-    KeyJ:'attack', KeyK:'attack', KeyX:'attack'
+    KeyJ:'attack', KeyX:'attack',
+    KeyK:'power', KeyC:'power',
+    KeyL:'throw', KeyV:'throw'
   };
   addEventListener('keydown', e => {
     if (e.code === 'KeyM'){ toggleMute(); return; }
+    if (state.mode !== 'play'){ menuKey(e.code); e.preventDefault(); return; }
     const k = keyMap[e.code];
-    if (k){ keys[k] = true; e.preventDefault();
-      if (state.mode !== 'play') start(); }
+    if (k){ keys[k] = true; e.preventDefault(); }
   }, {passive:false});
   addEventListener('keyup', e => {
     const k = keyMap[e.code]; if (k){ keys[k] = false; e.preventDefault(); }
   }, {passive:false});
 
-  // Boutons tactiles
+  // Boutons tactiles (actions)
   document.querySelectorAll('#touch .btn').forEach(b => {
-    const k = b.dataset.k === 'attack' ? 'attack' : b.dataset.k === 'jump' ? 'jump' : b.dataset.k;
-    const on  = e => { e.preventDefault(); keys[k]=true; b.classList.add('on');
-      if (state.mode!=='play') start(); };
+    const k = b.dataset.k;
+    const on  = e => { e.preventDefault(); keys[k]=true; b.classList.add('on'); };
     const off = e => { e.preventDefault(); keys[k]=false; b.classList.remove('on'); };
     b.addEventListener('touchstart', on,  {passive:false});
     b.addEventListener('touchend',   off, {passive:false});
@@ -246,16 +305,22 @@
     b.addEventListener('mouseup',    off);
     b.addEventListener('mouseleave', off);
   });
-  cv.addEventListener('pointerdown', () => { if (state.mode!=='play') start(); });
 
-  // Zone tactile glissante : mini-joystick flottant pour gauche/droite
+  // Taps sur le canvas (menus)
+  cv.addEventListener('pointerdown', e => {
+    const r = cv.getBoundingClientRect();
+    const mx = (e.clientX - r.left) * W / r.width;
+    const my = (e.clientY - r.top) * H / r.height;
+    handleTap(mx, my);
+  });
+
+  // Zone tactile glissante : mini-joystick flottant pour gauche/droite (+ bas = piqué)
   const pad = document.getElementById('pad');
   const stick = document.getElementById('stick');
   const knob = document.getElementById('knob');
   const padHint = pad.querySelector('.padhint');
-  let padId = null, padOX = 0;
+  let padId = null, padOX = 0, padOY = 0;
   const DEAD = 7, KNOB_MAX = 40, DOWN_DEAD = 24;
-  let padOY = 0;
 
   function padStart(e){
     if (padId !== null) return;
@@ -269,7 +334,6 @@
     knob.style.transform = 'translate(0,0)';
     if (padHint) padHint.style.opacity = '0';
     e.preventDefault();
-    if (state.mode !== 'play') start();
   }
   function padMove(e){
     if (padId === null) return;
@@ -315,12 +379,15 @@
   let LEVEL_W, GOAL_X, platforms, theme;
 
   // ---------- État ----------
-  const state = { mode:'title', time:0, cam:0, best:0, shake:0, hitstop:0,
+  const state = { mode:'title', time:0, cam:0, shake:0, hitstop:0,
                   level:1, runTime:0, rank:'' };
-  let player, troopers, bolts, sparks, saberTrail, pickups, msg, msgT;
+  const menu = { char: save.chars.vex||save.chars.torr ? 'kael' : 'kael', sel:0 };
+  let player, troopers, bolts, sparks, saberTrail, pickups, rings, thrown, msg, msgT;
+  let killCount = 0, runCrystals = 0;
+  let uiZones = [];
 
   // Paramètres du sabre
-  const ATTACK_DUR = 15, ATTACK_CD = 10;
+  const ATTACK_CD = 10;
   const SABER_LEN = 22, SABER_REST = -1.15;
   // Enchaînement au sol : chaque coup alterne le sens du geste (a0 → a1)
   const COMBO = [
@@ -336,28 +403,40 @@
   const DETECT = 150;        // distance de détection
   const AIM_TIME = 24;       // temps de visée télégraphié avant le tir (~0,4 s)
   const BOLT_SPEED = 2.4;
-  // Bonus
+  // Bonus temporaires
   const FURY_TIME = 360;     // durée du mode Fureur (~6 s)
+  // Force
+  const THROW_COST = 15;     // coût de la lame boomerang
 
-  function addTrooper(x,dir){
+  // ---------- Fabrique d'ennemis ----------
+  function addTrooper(x, dir, hp){
     troopers.push({ type:'trooper', x, y:GROUND-22, w:12, h:22, dir,
-      hp:2, alive:true, hit:0, hitLock:false, aim:0,
+      hp:hp||2, alive:true, hit:0, hitLock:false, stun:0, aim:0,
       shootCd:60+Math.random()*60, shootGap:70+Math.random()*70,
       prefDist:58+Math.random()*45, spd:0.3+Math.random()*0.35 });
   }
   function addDroid(x,y){
     troopers.push({ type:'droid', x, y, baseY:y, w:14, h:11, dir:-1,
-      hp:2, alive:true, hit:0, hitLock:false, aim:0,
+      hp:2, alive:true, hit:0, hitLock:false, stun:0, aim:0,
       shootCd:70+Math.random()*80, phase:Math.random()*6.28 });
   }
-  function addBoss(x, hp){
-    hp = hp || 14;
-    troopers.push({ type:'boss', x, y:GROUND-30, w:18, h:30, dir:-1,
-      hp, maxhp:hp, alive:true, hit:0, hitLock:false,
+  function addAcolyte(x){
+    troopers.push({ type:'acolyte', x, y:GROUND-20, w:11, h:20, dir:-1,
+      hp:3, alive:true, hit:0, hitLock:false, stun:0,
+      st:'patrol', stT:0, lungeCd:0 });
+  }
+  function addBoss(x, hp, tier){
+    troopers.push({ type:'boss', x, y:GROUND-30, w:18, h:30, dir:-1, tier:tier||1,
+      hp, maxhp:hp, alive:true, hit:0, hitLock:false, stun:0,
       state:'approach', stateT:70, atkCd:70, swingT:0, iframe:0, rage:0 });
   }
   function addPickup(x,y,type,grounded){
-    pickups.push({ x, y, type, w:10, h:10, vy:0, grounded:!!grounded, phase:Math.random()*6.28, dead:false });
+    pickups.push({ x, y, type, w:10, h:10, vx:0, vy:0, grounded:!!grounded, phase:Math.random()*6.28, dead:false });
+  }
+  function addShard(x,y){
+    pickups.push({ x, y, type:'shard', w:6, h:6,
+      vx:(Math.random()-0.5)*2, vy:-1-Math.random()*1.5,
+      grounded:false, phase:Math.random()*6.28, dead:false });
   }
 
   // ---------- Définition des niveaux ----------
@@ -373,7 +452,7 @@
       spawn(){
         [ [300,-1],[470,1],[640,-1],[920,-1],[1080,1],[1360,1] ].forEach(s=>addTrooper(s[0],s[1]));
         addDroid(560,72); addDroid(1000,60); addDroid(1240,78);
-        addBoss(LEVEL_W-150, 14);
+        addBoss(LEVEL_W-150, 14, 1);
         addPickup(255,88,'heal',true); addPickup(845,96,'fury',true); addPickup(1125,92,'heal',true);
       }
     },
@@ -387,15 +466,37 @@
               [780,124,70],[900,98,56],[1030,128,64],[1160,100,58],[1290,126,70],
               [1420,98,60],[1540,120,64] ],
       spawn(){
-        [ [280,-1],[430,1],[600,-1],[770,1],[980,-1],[1200,1],[1420,-1] ].forEach(s=>addTrooper(s[0],s[1]));
+        [ [280,-1],[430,1],[600,-1],[980,-1],[1200,1],[1420,-1] ].forEach(s=>addTrooper(s[0],s[1]));
         addDroid(500,66); addDroid(820,58); addDroid(1120,74); addDroid(1460,62);
-        addBoss(LEVEL_W-150, 18);
+        addAcolyte(730); addAcolyte(1310);
+        addBoss(LEVEL_W-150, 18, 2);
         addPickup(365,84,'fury',true); addPickup(905,86,'heal',true);
         addPickup(1295,112,'heal',true); addPickup(1545,108,'fury',true);
+      }
+    },
+    { // Niveau 3 — Temple perdu (jade/jungle)
+      name:'TEMPLE PERDU', w:1950,
+      theme:{ sky0:'#07140f', sky1:'#0e2a1c', star:'#2e5a46', starNear:'#7fd8b0',
+              planet:'#123a2a', planet2:'#1d5a40',
+              ground:'#14261e', groundTop:'#245240', groundLine:'#0a140f',
+              plat:'#1e4a38', platTop:'#3a7a5c', platBot:'#0f2418' },
+      plats:[ [130,120,60],[250,92,54],[380,124,64],[520,96,56],[660,126,70],
+              [800,98,58],[940,128,66],[1080,100,60],[1220,128,70],[1360,96,58],
+              [1500,124,66],[1640,98,60],[1770,126,70] ],
+      spawn(){
+        [ [300,-1],[460,1],[620,-1],[860,1],[1100,-1],[1340,1],[1560,-1] ]
+          .forEach(s=>addTrooper(s[0],s[1],3));
+        addDroid(520,64); addDroid(900,58); addDroid(1240,70); addDroid(1600,60);
+        addAcolyte(700); addAcolyte(1000); addAcolyte(1420); addAcolyte(1700);
+        addBoss(LEVEL_W-150, 22, 3);
+        addPickup(385,110,'heal',true); addPickup(805,84,'fury',true);
+        addPickup(1225,114,'heal',true); addPickup(1645,84,'fury',true);
       }
     }
   ];
 
+  let starL=[], starF=[];
+  for(let i=0;i<40;i++) starL.push({x:Math.random()*W, y:Math.random()*H*0.7, s:Math.random()<.3?2:1});
   function regenStars(){
     starF = [];
     for (let i=0;i<70;i++) starF.push({ x:Math.random()*LEVEL_W, y:Math.random()*H*0.6, s:1 });
@@ -406,15 +507,22 @@
     LEVEL_W = cfg.w; GOAL_X = LEVEL_W - 60; theme = cfg.theme;
     platforms = [ {x:0, y:GROUND, w:LEVEL_W, h:24} ]      // sol
       .concat(cfg.plats.map(p => ({ x:p[0], y:p[1], w:p[2], h:8 })));
-    const hp = keepHp ? Math.min(player.hp+1, 5) : 5;      // petit soin entre niveaux
+    const ch = CHARS[menu.char] || CHARS.kael;
+    const maxhp = ch.hp + save.upHp;
+    const energyMax = 100 + save.upForce*25;
+    const hp = keepHp && player ? Math.min(player.hp+1, maxhp) : maxhp;   // petit soin entre niveaux
+    const energy = keepHp && player ? player.energy : energyMax;
     player = {
       x:30, y:GROUND-26, w:12, h:22, vx:0, vy:0,
-      onGround:false, face:1, hp, maxhp:5,
-      attack:0, attackCd:0, attackDur:ATTACK_DUR, invuln:0, saberOn:true,
+      onGround:false, face:1, hp, maxhp,
+      attack:0, attackCd:0, attackDur:14, invuln:0, saberOn:true,
       combo:0, comboWindow:0, comboShow:0, diving:false, prevAtk:false,
-      rolling:0, airUsed:false, prevJump:false, fury:0
+      rolling:0, airUsed:false, prevJump:false, fury:0,
+      charDef:ch, col:ch.col, body:ch.body, spd:ch.spd,
+      energy, energyMax, dashT:0, prevPow:false, prevThr:false
     };
     troopers = []; pickups = []; bolts = []; sparks = []; saberTrail = [];
+    rings = []; thrown = null;
     cfg.spawn();
     regenStars();
     msg = ''; msgT = 0;
@@ -427,15 +535,17 @@
     banner('NIVEAU '+state.level+' — '+LEVELS[state.level-1].name);
   }
 
-  function start(){
+  function startRun(charId){
     Snd.resume();
+    menu.char = charId || menu.char;
     state.level = 1;
     state.runTime = 0; state.rank = '';
-    killCount = 0;
+    killCount = 0; runCrystals = 0;
+    player = null;
     loadLevel(0, false);
     state.mode = 'play';
     state.time = 0;
-    banner('QUE LA FORCE SOIT AVEC TOI');
+    banner(CHARS[menu.char].name+' — QUE LA FORCE SOIT AVEC TOI');
   }
 
   function banner(t){ msg = t; msgT = 90; }
@@ -450,13 +560,7 @@
       sparks.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:12+Math.random()*10,color});
     }
   }
-
-  function saberHitbox(){
-    // Rectangle de lame devant le joueur pendant la frappe
-    const reach = 18;
-    const x = player.face>0 ? player.x+player.w : player.x-reach;
-    return {x, y:player.y-4, w:reach, h:player.h+4};
-  }
+  function ring(x,y,max,col){ rings.push({x,y,r:6,max,col}); }
   function overlap(a,b){
     return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
   }
@@ -470,7 +574,7 @@
     if (p.attack<=0) return SABER_REST;
     if (p.diving) return Math.PI/2;            // pointe vers le bas
     const step = COMBO[p.combo] || COMBO[0];
-    const t = 1 - p.attack/step.dur;           // 0 → 1 le long du geste
+    const t = 1 - p.attack/p.attackDur;        // 0 → 1 le long du geste
     const e = t*t*(3-2*t);                      // lissage (smoothstep)
     return step.a0 + e*(step.a1-step.a0);
   }
@@ -507,6 +611,14 @@
       const dx=t.x+t.w/2-x, dy=t.y+t.h/2-y, d=dx*dx+dy*dy;
       if(d<bd){ bd=d; best=t; } }
     return best;
+  }
+  function deflectBolt(b){
+    b.from='player';
+    const sp = 3.8, tg = nearestTrooper(b.x,b.y);
+    if (tg){
+      const ddx=tg.x+tg.w/2-b.x, ddy=tg.y+tg.h/2-b.y, m=Math.hypot(ddx,ddy)||1;
+      b.vx = ddx/m*sp; b.vy = ddy/m*sp;
+    } else { b.vx = sp*player.face; b.vy = (Math.random()-0.5)*1.2; }
   }
   function kick(m){ state.shake = Math.min(6, Math.max(state.shake, m)); }
   function bossAlive(){ return troopers.some(t => t.type==='boss' && t.alive); }
@@ -558,11 +670,42 @@
     if (t.x>LEVEL_W-32) t.x=LEVEL_W-32;
   }
 
+  function aiAcolyte(t){
+    const dx = player.x - t.x, adx = Math.abs(dx);
+    if (t.lungeCd>0) t.lungeCd--;
+    switch(t.st){
+      case 'patrol':
+        t.x += 0.5*t.dir;
+        if (adx < 170) t.st='chase';
+        break;
+      case 'chase':
+        t.dir = Math.sign(dx) || t.dir;
+        t.x += 1.25*t.dir;
+        if (adx < 26 && t.lungeCd<=0){ t.st='wind'; t.stT=14; }
+        if (adx > 220) t.st='patrol';
+        break;
+      case 'wind':   // amorce télégraphiée de la ruée
+        if (--t.stT<=0){ t.st='lunge'; t.stT=10; }
+        break;
+      case 'lunge':
+        t.x += 3.4*t.dir;
+        if (--t.stT<=0){ t.st='rec'; t.stT=18; t.lungeCd=55; }
+        break;
+      case 'rec':
+        if (--t.stT<=0) t.st='chase';
+        break;
+    }
+    if (t.x<20){ t.x=20; t.dir=1; }
+    if (t.x>LEVEL_W-32){ t.x=LEVEL_W-32; t.dir=-1; }
+  }
+
   function fireVolley(t){
     const bx = t.x + (t.dir>0 ? t.w : 0), by = t.y+12;
     const base = Math.atan2(player.y+8-by, player.x+player.w/2-bx);
-    for (let i=-1;i<=1;i++){
-      const a = base + i*0.24, sp = 3.7;          // plus rapides que les droïdes
+    const n = 2 + t.tier;                          // 3 / 4 / 5 tirs selon le palier
+    const sp = 3.5 + 0.25*t.tier;
+    for (let i=0;i<n;i++){
+      const a = base + (i-(n-1)/2)*0.22;
       boltSpawn(bx, by, Math.cos(a)*sp, Math.sin(a)*sp, 'trooper');
     }
     spark(bx, by, '#ff5a4d', 7); Snd.shoot(true);
@@ -570,6 +713,7 @@
   function bossBurst(t){
     t.state='burst'; t.stateT=22; t.atkCd=Math.max(t.atkCd,45);
     spark(t.x+t.w/2, t.y+t.h/2, '#ffcaa0', 22); kick(6);
+    ring(t.x+t.w/2, t.y+t.h/2, 50, '#ffcaa0');
     state.hitstop = Math.max(state.hitstop, 4);
     Snd.burst();
     const dx = player.x - t.x, dy = player.y - t.y;
@@ -585,12 +729,13 @@
     if (t.iframe>0) t.iframe--;
     if (t.stateT>0) t.stateT--;
     if (t.atkCd>0) t.atkCd--;
+    const spd = 0.95 + 0.2*t.tier;
     switch(t.state){
       case 'approach':
-        if (adx>28) t.x += 1.15*Math.sign(dx);      // avance vite et sans relâche
+        if (adx>28) t.x += spd*Math.sign(dx);      // avance vite et sans relâche
         if (t.atkCd<=0){
           if (adx < 48){ t.state='wind'; t.stateT=16; }             // corps à corps
-          else if (adx < 210){ t.state='volwind'; t.stateT=24; }    // volée à distance
+          else if (adx < 220){ t.state='volwind'; t.stateT=24; }    // volée à distance
         } else if (t.stateT<=0 && Math.random()<0.35){
           t.state='guard'; t.stateT=45+Math.random()*30;
         }
@@ -638,15 +783,18 @@
     return true;
   }
 
-  // Mort d'un ennemi + butin éventuel
+  // Mort d'un ennemi : butin, cristaux, énergie
   function dropLoot(t){
     const r = Math.random();
-    if (r < 0.22) addPickup(t.x+t.w/2-5, t.y, 'heal');
-    else if (r < 0.32) addPickup(t.x+t.w/2-5, t.y, 'fury');
+    if (r < 0.18) addPickup(t.x+t.w/2-5, t.y, 'heal');
+    else if (r < 0.27) addPickup(t.x+t.w/2-5, t.y, 'fury');
   }
   function onEnemyDeath(t){
     t.alive = false;
-    addMsgKill();
+    killCount++;
+    player.energy = Math.min(player.energyMax, player.energy+10);
+    const shards = t.type==='boss' ? 5 : t.type==='trooper' ? 1 : 2;
+    for (let i=0;i<shards;i++) addShard(t.x+t.w/2-3, t.y+4);
     if (t.type==='boss'){
       spark(t.x+t.w/2, t.y+t.h/2, '#ffffff', 30); kick(7);
       state.hitstop = Math.max(state.hitstop, 10);
@@ -663,15 +811,136 @@
       if (player.hp<player.maxhp){ player.hp++; banner('SOIN +1'); }
       else banner('PLEINE VIE');
       spark(player.x+player.w/2, player.y+8, '#7dff9a', 12);
-    } else {
+      Snd.pickup();
+    } else if (k.type==='fury'){
       player.fury = FURY_TIME; banner('FUREUR DU SABRE !');
       spark(player.x+player.w/2, player.y+8, '#5cc8ff', 16);
-      kick(3);
+      kick(3); Snd.pickup();
+    } else { // cristal
+      runCrystals += 5;
+      spark(k.x+3, k.y+3, '#ffd24d', 4);
+      Snd.shard();
     }
-    Snd.pickup();
   }
 
-  // ---------- Boucle ----------
+  function updatePickups(){
+    const p = player;
+    for (const k of pickups){
+      // aimant des cristaux vers le héros
+      if (k.type==='shard'){
+        const dx = p.x+p.w/2-(k.x+k.w/2), dy = p.y+p.h/2-(k.y+k.h/2), m = Math.hypot(dx,dy);
+        if (m < 52){ k.x += dx/m*2.8; k.y += dy/m*2.8; k.grounded = true; }
+      }
+      if (!k.grounded){
+        k.vy += 0.35; k.x += k.vx||0; k.y += k.vy;
+        for (const pl of platforms){
+          if (k.x+k.w>pl.x && k.x<pl.x+pl.w &&
+              k.y+k.h>pl.y && k.y+k.h < pl.y+pl.h+12 && k.vy>=0){
+            k.y = pl.y-k.h; k.vy=0; k.vx=0; k.grounded=true;
+          }
+        }
+        if (k.y>H+30) k.dead=true;
+      }
+      k.phase += 0.12;
+      if (overlap(p, {x:k.x-4, y:k.y-4, w:k.w+8, h:k.h+8})){ applyPickup(k); k.dead=true; }
+    }
+    pickups = pickups.filter(k=>!k.dead);
+  }
+
+  // ---------- Pouvoirs de Force ----------
+  function usePower(){
+    const p = player, pw = p.charDef.power;
+    if (p.energy < pw.cost){ Snd.err(); return; }
+    if (pw.id==='quake' && !p.onGround){ Snd.err(); return; }
+    p.energy -= pw.cost;
+    const cx = p.x+p.w/2, cy = p.y+p.h/2;
+    if (pw.id==='wave'){
+      // Onde de Force : renvoie les tirs proches, repousse et étourdit les ennemis
+      ring(cx, cy, 68, '#7de8ff');
+      kick(4); Snd.power();
+      for (const b of bolts){
+        if (b.from==='trooper' && Math.hypot(b.x-cx, b.y-cy) < 72){
+          deflectBolt(b); spark(b.x,b.y,'#bff7ff',6);
+        }
+      }
+      for (const t of troopers){
+        if (t.alive && t.type!=='boss' && Math.hypot(t.x+t.w/2-cx, t.y+t.h/2-cy) < 72){
+          t.stun = Math.max(t.stun, 42);
+          t.x += (t.x < p.x ? -12 : 12);
+          spark(t.x+t.w/2, t.y+t.h/2, '#7de8ff', 6);
+        }
+      }
+    } else if (pw.id==='dash'){
+      // Frappe éclair : ruée invulnérable qui tranche tout sur son passage
+      p.dashT = 9;
+      p.invuln = Math.max(p.invuln, 16);
+      p.rolling = 0; p.diving = false;
+      for (const t of troopers) t.dashLock = false;
+      spark(cx, cy, p.col.core, 8);
+      kick(3); Snd.power();
+    } else {
+      // Séisme : onde de choc au sol, dégâts + étourdissement
+      ring(cx, p.y+p.h, 84, '#ffcf8a');
+      kick(6); state.hitstop = Math.max(state.hitstop, 4);
+      Snd.burst();
+      const dmg = 2 + p.charDef.dmgBonus + (save.upDmg>=3?1:0);
+      for (const t of troopers){
+        if (!t.alive || t.type==='droid') continue;
+        if (Math.abs(t.x+t.w/2-cx) < 95){
+          damageEnemy(t, dmg);
+          if (t.alive && t.type!=='boss') t.stun = Math.max(t.stun, 48);
+          spark(t.x+t.w/2, t.y+t.h/2, '#ffcf8a', 8);
+        }
+      }
+    }
+  }
+
+  function throwSaber(){
+    const p = player;
+    if (thrown || p.energy < THROW_COST){ Snd.err(); return; }
+    p.energy -= THROW_COST;
+    thrown = { x:p.x+p.w/2, y:p.y+8, vx:4.2*p.face, dist:0, phase:'out', spin:0 };
+    troopers.forEach(t => t.thLock = false);
+    Snd.throwS();
+  }
+  function updateThrown(){
+    const p = player, s = thrown;
+    if (!s) return;
+    s.spin += 0.45;
+    if (s.phase==='out'){
+      s.x += s.vx; s.dist += Math.abs(s.vx);
+      if (s.dist > 95){ s.phase='back'; troopers.forEach(t => t.thLock=false); }
+    } else {
+      const dx = p.x+p.w/2-s.x, dy = p.y+8-s.y, m = Math.hypot(dx,dy)||1;
+      s.x += dx/m*5.2; s.y += dy/m*5.2;
+      if (m < 11){ thrown = null; return; }
+    }
+    // touche les ennemis (une fois à l'aller, une fois au retour)
+    for (const t of troopers){
+      if (t.alive && !t.thLock &&
+          s.x>t.x-2 && s.x<t.x+t.w+2 && s.y>t.y-2 && s.y<t.y+t.h+2){
+        t.thLock = true;
+        const d = 1 + (p.fury>0?1:0);
+        if (damageEnemy(t, d)){ spark(t.x+6, t.y+10, p.col.core, 8); Snd.hit(); }
+      }
+    }
+    // la lame lancée dévie aussi les tirs qu'elle croise
+    for (const b of bolts){
+      if (b.from==='trooper' && Math.hypot(b.x-s.x, b.y-s.y) < 8){
+        deflectBolt(b); spark(b.x,b.y,'#bff7ff',5); Snd.deflect();
+      }
+    }
+  }
+
+  function hurt(n){
+    const p=player;
+    p.hp-=n; p.invuln=60;
+    spark(p.x+p.w/2, p.y+8, '#ff6b6b', 8);
+    kick(3); Snd.hurt();
+    if (p.hp<=0) p.hp=0;
+  }
+
+  // ---------- Boucle de jeu ----------
   function update(){
     const p = player;
 
@@ -679,12 +948,15 @@
     if (p.rolling>0){
       // pendant la roulade : l'élan est conservé, le contrôle est réduit
       p.vx *= 0.94;
+    } else if (p.dashT>0){
+      p.vx = 8.5*p.face;   // ruée éclair
     } else {
       // demi-tour net : on tue l'élan opposé pour une réponse immédiate
-      if (keys.left){ if (p.vx>0) p.vx*=0.5; p.vx -= MOVE; p.face=-1; }
-      if (keys.right){ if (p.vx<0) p.vx*=0.5; p.vx += MOVE; p.face=1; }
+      if (keys.left){ if (p.vx>0) p.vx*=0.5; p.vx -= MOVE*p.spd; p.face=-1; }
+      if (keys.right){ if (p.vx<0) p.vx*=0.5; p.vx += MOVE*p.spd; p.face=1; }
       p.vx *= FRICTION;
-      if (Math.abs(p.vx) > 3) p.vx = 3*Math.sign(p.vx);
+      const cap = 3*p.spd;
+      if (Math.abs(p.vx) > cap) p.vx = cap*Math.sign(p.vx);
     }
 
     // Saut, et double saut en roulade (esquive)
@@ -706,7 +978,6 @@
     p.vy += GRAV; if (p.vy>10) p.vy=10;
 
     p.x += p.vx;
-    // collisions horizontales avec bord du niveau
     if (p.x<0) p.x=0;
     if (p.x+p.w>LEVEL_W) p.x=LEVEL_W-p.w;
 
@@ -721,7 +992,30 @@
       }
     }
 
-    // ---- Attaque au sabre : combo au sol, piqué en l'air ----
+    // Énergie de Force (régénération lente)
+    p.energy = Math.min(p.energyMax, p.energy + 0.06 + save.upForce*0.02);
+
+    // Pouvoir et lame boomerang (front montant)
+    const powEdge = keys.power && !p.prevPow; p.prevPow = keys.power;
+    const thrEdge = keys.throw && !p.prevThr; p.prevThr = keys.throw;
+    if (powEdge) usePower();
+    if (thrEdge) throwSaber();
+    updateThrown();
+
+    // Ruée de Vex : tranche ce qu'elle traverse
+    if (p.dashT>0){
+      p.dashT--;
+      spark(p.x+Math.random()*p.w, p.y+Math.random()*p.h, p.col.core, 1);
+      const dmg = 2 + p.charDef.dmgBonus + (save.upDmg>=3?1:0);
+      for (const t of troopers){
+        if (t.alive && !t.dashLock && overlap(p,t)){
+          t.dashLock = true;
+          if (damageEnemy(t, dmg)){ spark(t.x+t.w/2, t.y+t.h/2, p.col.core, 10); Snd.hit(); }
+        }
+      }
+    }
+
+    // ---- Attaque au sabre : combo au sol/en l'air, piqué avec Bas ----
     const atkEdge = keys.attack && !p.prevAtk;   // front montant (une frappe par appui)
     p.prevAtk = keys.attack;
 
@@ -746,15 +1040,16 @@
       if (!p.onGround && keys.down && !p.diving){
         // coup plongeant : attaque « bas » en l'air
         p.diving=true; p.attack=DIVE_DUR; p.attackDur=DIVE_DUR;
-        p.combo=0; p.comboWindow=0; p.rolling=0;   // annule une roulade en cours
+        p.combo=0; p.comboWindow=0; p.rolling=0;
         p.vy = Math.max(p.vy, 5.5); p.vx *= 0.4;
         Snd.swing();
       } else {
         // frappe : combo au sol OU slash aérien (touche les droïdes)
         if (p.comboWindow>0 && p.combo<COMBO.length-1) p.combo++; else p.combo=0;
         const step = COMBO[p.combo];
-        p.attack = step.dur; p.attackDur = step.dur;
-        p.attackCd = step.dur + (step.power ? ATTACK_CD+6 : 4);
+        const dur = Math.max(8, Math.round(step.dur*p.charDef.atkScale));
+        p.attack = dur; p.attackDur = dur;
+        p.attackCd = dur + (step.power ? ATTACK_CD+6 : 4);
         p.comboWindow = 0;
         if (step.power && p.onGround) p.vx += p.face*1.8;   // élan avant sur le moulinet
         if (p.combo>0) p.comboShow = 40;
@@ -782,10 +1077,14 @@
       if (t.hit>0) t.hit--;
       if (!active) t.hitLock = false;      // ré-armé entre deux gestes
 
-      // IA selon le type
-      if (t.type==='droid')      aiDroid(t);
-      else if (t.type==='boss')  aiBoss(t);
-      else                        aiTrooper(t);
+      // étourdi : figé, sans IA ni danger de contact
+      if (t.stun>0){ t.stun--; }
+      else {
+        if (t.type==='droid')        aiDroid(t);
+        else if (t.type==='boss')    aiBoss(t);
+        else if (t.type==='acolyte') aiAcolyte(t);
+        else                          aiTrooper(t);
+      }
 
       // frappé par le sabre : lame testée sur tout l'arc, un impact par geste
       if (active && !t.hitLock &&
@@ -800,14 +1099,18 @@
           Snd.block();
         } else if (p.diving){
           // piqué : rebond façon pogo + gros dégâts
-          const dealt = damageEnemy(t, 2 + (fury?1:0));
+          const dmg = 2 + (fury?1:0) + p.charDef.dmgBonus
+                    + (save.upDmg>=2?1:0) + (save.upDmg>=3?1:0);
+          const dealt = damageEnemy(t, dmg);
           p.vy = -JUMP*0.72; p.diving=false; p.attack=0; p.attackCd=4;
           spark(t.x+t.w/2, t.y, '#bff7ff', 12);
           kick(4); state.hitstop = Math.max(state.hitstop,4);
           if (dealt) Snd.hit();
         } else {
           const power = COMBO[p.combo] && COMBO[p.combo].power;
-          const dealt = damageEnemy(t, (power ? 2 : 1) + (fury?1:0));
+          const dmg = (power?2:1) + (fury?1:0) + p.charDef.dmgBonus
+                    + ((power && save.upDmg>=1)?1:0) + (save.upDmg>=3?1:0);
+          const dealt = damageEnemy(t, dmg);
           p.vx += (power ? -3 : -1.6)*p.face;
           kick(power ? 5 : 3);
           state.hitstop = Math.max(state.hitstop, power ? 5 : 3);
@@ -815,8 +1118,8 @@
           if (dealt) Snd.hit();
         }
       }
-      // contact direct : dégâts (sauf pendant un piqué ou une roulade)
-      if (t.alive && !p.diving && p.rolling<=0 && p.invuln<=0 && overlap(p,t)){
+      // contact direct : dégâts (sauf piqué, roulade, ou ennemi étourdi)
+      if (t.alive && t.stun<=0 && !p.diving && p.rolling<=0 && p.invuln<=0 && overlap(p,t)){
         hurt(1); p.vx = 4*Math.sign(p.x-t.x || 1);
       }
     }
@@ -830,12 +1133,7 @@
         ((active && bpts.some(pt=>Math.hypot(pt.x-b.x, pt.y-b.y)<6)) ||
          (fury && Math.hypot(b.x-pcx, b.y-pcy) < 26));
       if (deflect){
-        b.from='player';
-        const sp = 3.8, tg = nearestTrooper(b.x,b.y);
-        if (tg){
-          const ddx=tg.x+tg.w/2-b.x, ddy=tg.y+tg.h/2-b.y, m=Math.hypot(ddx,ddy)||1;
-          b.vx = ddx/m*sp; b.vy = ddy/m*sp;
-        } else { b.vx = sp*p.face; b.vy = (Math.random()-0.5)*1.2; }
+        deflectBolt(b);
         spark(b.x,b.y, fury?'#bfeaff':'#bff7ff', 10);
         kick(2); state.hitstop = Math.max(state.hitstop, 2); Snd.deflect();
       }
@@ -861,6 +1159,10 @@
 
     // Fureur
     if (p.fury>0) p.fury--;
+
+    // Anneaux d'onde
+    for (const r of rings) r.r += 3;
+    rings = rings.filter(r => r.r < r.max);
 
     // Sparks
     for (const s of sparks){ s.x+=s.vx; s.y+=s.vy; s.vy+=0.08; s.life--; }
@@ -890,76 +1192,86 @@
     if (p.hp<=0){ finishRun('dead'); }
   }
 
-  // Calcule le rang et fige la fin de partie
+  // Calcule le rang, met en banque les cristaux et fige la fin de partie
+  const RANKS = 'DCBAS';
   function finishRun(mode){
-    // Score : ennemis vaincus, vie restante, rapidité
     const secs = state.runTime/60;
     let score = killCount*100 + player.hp*120;
-    score += Math.max(0, 400 - secs*2);         // bonus de rapidité
-    if (mode==='win') score += 500;
-    state.rank = score>1400 ? 'S' : score>1100 ? 'A' : score>800 ? 'B' : score>500 ? 'C' : 'D';
-    state.best = Math.max(state.best, killCount);
+    score += Math.max(0, 500 - secs*2);         // bonus de rapidité
+    if (mode==='win') score += 600;
+    state.rank = score>1800 ? 'S' : score>1400 ? 'A' : score>1000 ? 'B' : score>600 ? 'C' : 'D';
+    save.crystals += runCrystals;
+    save.runs++;
+    if (RANKS.indexOf(state.rank) > RANKS.indexOf(save.bestRank)) save.bestRank = state.rank;
+    persist();
     state.mode = mode;
     if (mode==='win') Snd.win(); else Snd.lose();
   }
 
-  function updatePickups(){
-    const p = player;
-    for (const k of pickups){
-      if (!k.grounded){
-        k.vy += 0.4; k.y += k.vy;
-        for (const pl of platforms){
-          if (k.x+k.w>pl.x && k.x<pl.x+pl.w &&
-              k.y+k.h>pl.y && k.y+k.h < pl.y+pl.h+12 && k.vy>=0){
-            k.y = pl.y-k.h; k.vy=0; k.grounded=true;
-          }
-        }
-        if (k.y>H+30) k.dead=true;
-      }
-      k.phase += 0.12;
-      if (overlap(p, {x:k.x-4, y:k.y-4, w:k.w+8, h:k.h+8})){ applyPickup(k); k.dead=true; }
+  // ---------- Menus ----------
+  function zone(x,y,w,h,cb){ uiZones.push({x,y,w,h,cb}); }
+  function handleTap(mx,my){
+    if (state.mode==='play') return;
+    Snd.resume();
+    for (const z of uiZones){
+      if (mx>=z.x && mx<=z.x+z.w && my>=z.y && my<=z.y+z.h){ z.cb(); return; }
     }
-    pickups = pickups.filter(k=>!k.dead);
   }
+  function menuKey(code){
+    Snd.resume();
+    if (state.mode==='title' || state.mode==='win' || state.mode==='dead'){
+      if (code==='Enter'||code==='Space'||code==='KeyJ'){ gotoSelect(); }
+      return;
+    }
+    if (state.mode==='select' || state.mode==='shop'){
+      const n = uiZones.length; if (!n) return;
+      if (code==='ArrowRight'||code==='ArrowDown'){ menu.sel=(menu.sel+1)%n; Snd.uiMove(); }
+      else if (code==='ArrowLeft'||code==='ArrowUp'){ menu.sel=(menu.sel-1+n)%n; Snd.uiMove(); }
+      else if (code==='Enter'||code==='Space'||code==='KeyJ'){ const z=uiZones[menu.sel]; if(z) z.cb(); }
+      else if (code==='Escape'){
+        state.mode = state.mode==='shop' ? 'select' : 'title';
+        menu.sel = state.mode==='select' ? 4 : 0;
+        Snd.uiMove();
+      }
+    }
+  }
+  function gotoSelect(){ state.mode='select'; menu.sel=4; Snd.uiSel(); }
 
-  let killCount=0;
-  function aliveKilled(){ return killCount; }
-  function addMsgKill(){ killCount++; }
-
-  function hurt(n){
-    const p=player;
-    p.hp-=n; p.invuln=60;
-    spark(p.x+p.w/2, p.y+8, '#ff6b6b', 8);
-    kick(3); Snd.hurt();
-    if (p.hp<=0) p.hp=0;
+  function tryBuyChar(id){
+    const ch = CHARS[id];
+    if (save.chars[id]){ menu.char=id; Snd.uiSel(); return; }
+    if (save.crystals >= ch.cost){
+      save.crystals -= ch.cost; save.chars[id]=true; persist();
+      menu.char = id; Snd.buy();
+    } else Snd.err();
+  }
+  function tryBuyUpgrade(row){
+    const lvl = save[row.k];
+    if (lvl>=3){ Snd.err(); return; }
+    const cost = row.costs[lvl];
+    if (save.crystals >= cost){
+      save.crystals -= cost; save[row.k]++; persist(); Snd.buy();
+    } else Snd.err();
   }
 
   // ---------- Rendu ----------
-  let starL=[], starF=[];
-  for(let i=0;i<40;i++) starL.push({x:Math.random()*W, y:Math.random()*H*0.7, s:Math.random()<.3?2:1});
-  // starF (étoiles proches) est régénéré par niveau dans regenStars()
-
   function px(x){ return Math.round(x - state.cam); }
 
   function drawBg(){
     const th = theme || LEVELS[0].theme;
-    // ciel dégradé
     const g = ctx.createLinearGradient(0,0,0,H);
     g.addColorStop(0, th.sky0); g.addColorStop(1, th.sky1);
     ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
-    // étoiles lointaines (parallaxe légère)
     ctx.fillStyle=th.star;
     for(const s of starL){
       const x=(s.x - state.cam*0.2)%W; const xx=x<0?x+W:x;
       ctx.fillRect(xx|0, s.y|0, s.s, s.s);
     }
-    // grand astre
     const pxp = px(1180);
     ctx.fillStyle=th.planet; ctx.beginPath();
     ctx.arc(pxp, 44, 30, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle=th.planet2; ctx.beginPath();
     ctx.arc(pxp-8, 38, 22, 0, Math.PI*2); ctx.fill();
-    // étoiles proches
     ctx.fillStyle=th.starNear;
     for(const s of starF){
       const x=px(s.x); if(x>-2&&x<W+2) ctx.fillRect(x, s.y|0, s.s, s.s);
@@ -988,12 +1300,12 @@
       const locked = bossAlive();
       ctx.fillStyle='#1a2338'; ctx.fillRect(gx, GROUND-40, 26, 40);
       const glow = 0.5+0.5*Math.sin(state.time*0.1);
-      ctx.fillStyle = locked ? '#e0483c' : '#5ce0ff';   // rouge verrouillée / bleue ouverte
+      ctx.fillStyle = locked ? '#e0483c' : '#5ce0ff';
       ctx.globalAlpha = locked ? 0.35 : 0.5+glow*0.5;
       ctx.fillRect(gx+4, GROUND-36, 18, 34);
       ctx.globalAlpha=1;
       ctx.fillStyle='#0a0f1e'; ctx.fillRect(gx+10, GROUND-20, 6, 6);
-      if (locked){   // cadenas symbolique
+      if (locked){
         ctx.fillStyle='#e0483c';
         ctx.fillRect(gx+10, GROUND-24, 6, 5); ctx.fillRect(gx+11, GROUND-27, 4, 3);
       }
@@ -1004,7 +1316,6 @@
     const x=px(t.x), y=t.y;
     if (x<-16||x>W+16) return;
     const flash = t.hit>0 && (t.hit%4<2);
-    // corps (armure blanche)
     ctx.fillStyle = flash ? '#ffb0b0' : '#e6ecf5';
     ctx.fillRect(x+2, y+8, 8, 10);        // torse
     ctx.fillRect(x+2, y, 8, 8);           // casque
@@ -1012,14 +1323,13 @@
     ctx.fillRect(x+3, y+2, 6, 3);         // visière
     ctx.fillRect(x+4, y+18, 2, 4);        // jambe
     ctx.fillRect(x+8, y+18, 2, 4);
-    // blaster
     ctx.fillStyle='#2a2f3a';
     const muzzle = t.dir>0 ? x+15 : x-3;
     if (t.dir>0) ctx.fillRect(x+10, y+11, 5, 2);
     else ctx.fillRect(x-3, y+11, 5, 2);
     // télégraphe de tir : lueur rouge qui grossit au canon pendant la visée
     if (t.aim>0){
-      const c = 1 - t.aim/AIM_TIME;           // 0 → 1 à mesure que le tir approche
+      const c = 1 - t.aim/AIM_TIME;
       const r = 1.5 + c*3;
       ctx.globalAlpha = 0.35 + 0.55*c;
       ctx.fillStyle = '#ff5a4d';
@@ -1029,27 +1339,17 @@
     }
   }
 
-  function drawEnemy(t){
-    if (t.type==='droid') drawDroid(t);
-    else if (t.type==='boss') drawBoss(t);
-    else drawTrooper(t);
-  }
-
   function drawDroid(t){
     const x=px(t.x), y=t.y;
     if (x<-18||x>W+18) return;
     const flash = t.hit>0 && (t.hit%4<2);
-    // lueur de propulsion
     ctx.globalAlpha=0.4; ctx.fillStyle='#3aa0ff';
     ctx.beginPath(); ctx.arc(x+t.w/2, y+t.h/2, 9, 0, Math.PI*2); ctx.fill();
     ctx.globalAlpha=1;
-    // coque
     ctx.fillStyle = flash ? '#ffb0b0' : '#9aa8bd';
     ctx.fillRect(x+2, y+2, 10, 6);
-    ctx.fillStyle='#6b7688'; ctx.fillRect(x, y+4, 14, 3);   // anneau
-    // œil rouge
+    ctx.fillStyle='#6b7688'; ctx.fillRect(x, y+4, 14, 3);
     ctx.fillStyle='#ff4d4d'; ctx.fillRect(x+ (t.dir>0?9:3), y+3, 3, 3);
-    // canon + télégraphe (tir vers le bas)
     const mx=x+t.w/2, my=y+t.h;
     ctx.fillStyle='#2a2f3a'; ctx.fillRect(mx-1, my-1, 2, 3);
     if (t.aim>0){
@@ -1060,33 +1360,61 @@
     }
   }
 
+  function drawAcolyte(t){
+    const x=px(t.x), y=t.y;
+    if (x<-18||x>W+18) return;
+    const flash = t.hit>0 && (t.hit%4<2);
+    // robe sombre à capuche
+    ctx.fillStyle = flash ? '#7a4a5a' : '#2a2233';
+    ctx.fillRect(x+1, y+5, 9, 15);
+    ctx.fillStyle = flash ? '#8a5a6a' : '#1a1420';
+    ctx.fillRect(x+2, y, 7, 7);            // capuche
+    ctx.fillStyle='#ff4040';
+    ctx.fillRect(x+3, y+3, 2, 2); ctx.fillRect(x+6, y+3, 2, 2);   // yeux rouges
+    ctx.fillStyle='#14101c';
+    ctx.fillRect(x+3, y+18, 2, 2); ctx.fillRect(x+6, y+18, 2, 2);
+    // lame courte rouge, angle selon l'état
+    const gx = t.dir>0 ? x+10 : x+1, gy = y+10;
+    let a = -0.6;
+    if (t.st==='wind') a = -2.0;
+    else if (t.st==='lunge') a = 0.15;
+    const len = 12, d=t.dir;
+    const ex = gx + Math.cos(a)*len*d, ey = gy + Math.sin(a)*len;
+    ctx.lineCap='round';
+    if (t.st==='wind'){   // télégraphe : lame qui pulse
+      ctx.globalAlpha = 0.5+0.4*Math.sin(state.time*0.6);
+    }
+    ctx.strokeStyle='rgba(255,60,60,0.4)'; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(ex,ey); ctx.stroke();
+    ctx.strokeStyle='#ff3b3b'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(ex,ey); ctx.stroke();
+    ctx.globalAlpha=1; ctx.lineWidth=1;
+  }
+
   function drawBoss(t){
     const x=px(t.x), y=t.y;
     if (x<-40||x>W+40) return;
     const flash = t.hit>0 && (t.hit%4<2);
-    // cape sombre
     ctx.fillStyle = flash ? '#7a3b3b' : '#241a2e';
     ctx.fillRect(x, y+8, t.w, t.h-8);
     ctx.fillStyle = flash ? '#8a4a4a' : '#151019';
     ctx.fillRect(x+3, y+8, t.w-6, t.h-10);
-    // tête casquée
     ctx.fillStyle='#0d0a12'; ctx.fillRect(x+4, y, t.w-8, 9);
-    ctx.fillStyle='#c0202a'; ctx.fillRect(x+6, y+3, t.w-12, 2);   // visière rouge
-    // jambes
+    ctx.fillStyle='#c0202a'; ctx.fillRect(x+6, y+3, t.w-12, 2);
     ctx.fillStyle='#0d0a12';
     ctx.fillRect(x+4, y+t.h-4, 3, 4); ctx.fillRect(x+t.w-7, y+t.h-4, 3, 4);
     // Sabre rouge : position selon l'état
     const gx = t.dir>0 ? x+t.w : x;
     const gy = y+12;
     let a;
-    if (t.state==='guard')                          a = -1.15;   // levé en garde
-    else if (t.state==='wind'||t.state==='volwind') a = -2.2;    // armé au-dessus
-    else if (t.state==='attack')                    a = 0.5;     // abattu devant
-    else if (t.state==='burst')                     a = 0;       // horizontal (onde)
-    else                                             a = -0.7;    // au repos
+    if (t.state==='guard')                          a = -1.15;
+    else if (t.state==='wind'||t.state==='volwind') a = -2.2;
+    else if (t.state==='attack')                    a = 0.5;
+    else if (t.state==='burst')                     a = 0;
+    else                                             a = -0.7;
     const len = t.state==='burst' ? 26 : 20, d=t.dir;
     const ex = gx + Math.cos(a)*len*d, ey = gy + Math.sin(a)*len;
-    ctx.fillStyle='#c9ccd4'; ctx.fillRect(gx-1, gy-1, 3, 4);       // manche
+    ctx.fillStyle='#c9ccd4'; ctx.fillRect(gx-1, gy-1, 3, 4);
     ctx.lineCap='round';
     ctx.strokeStyle='rgba(255,60,60,0.35)'; ctx.lineWidth=6;
     ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(ex,ey); ctx.stroke();
@@ -1110,59 +1438,96 @@
       ctx.beginPath(); ctx.arc(x+t.w/2, y+t.h/2, 15, 0, Math.PI*2); ctx.stroke();
       ctx.globalAlpha=1; ctx.lineWidth=1;
     }
-    // onde de choc du burst
-    if (t.state==='burst'){
-      const c = 1 - t.stateT/22;
-      ctx.globalAlpha = Math.max(0, 0.5*(1-c));
-      ctx.strokeStyle='#ffcaa0'; ctx.lineWidth=2;
-      ctx.beginPath(); ctx.arc(x+t.w/2, y+t.h/2, 8+c*40, 0, Math.PI*2); ctx.stroke();
-      ctx.globalAlpha=1; ctx.lineWidth=1;
-    }
     // barre de vie du boss
     const bw=t.w+8, bx=x-4, by=y-7;
     ctx.fillStyle='#3a1420'; ctx.fillRect(bx, by, bw, 3);
     ctx.fillStyle='#ff4d6a'; ctx.fillRect(bx, by, bw*Math.max(0,t.hp)/t.maxhp, 3);
   }
 
+  function drawEnemy(t){
+    if (t.type==='droid') drawDroid(t);
+    else if (t.type==='boss') drawBoss(t);
+    else if (t.type==='acolyte') drawAcolyte(t);
+    else drawTrooper(t);
+    // étoiles d'étourdissement
+    if (t.alive && t.stun>0){
+      const x=px(t.x)+t.w/2, y=t.y-5;
+      ctx.fillStyle='#ffe873';
+      const ph = state.time*0.3;
+      ctx.fillRect(x-5+Math.cos(ph)*4|0, y+Math.sin(ph)*2|0, 2, 2);
+      ctx.fillRect(x+3+Math.cos(ph+3)*4|0, y+Math.sin(ph+3)*2|0, 2, 2);
+    }
+  }
+
   function drawPickups(){
     for (const k of pickups){
       const x=px(k.x), y=k.y + Math.sin(k.phase)*2;
       if (x<-12||x>W+12) continue;
+      if (k.type==='shard'){
+        ctx.save();
+        ctx.translate(x+3, y+3); ctx.rotate(Math.PI/4);
+        ctx.fillStyle='#ffd24d'; ctx.fillRect(-2.5,-2.5,5,5);
+        ctx.fillStyle='#fff3c0'; ctx.fillRect(-1,-1,2,2);
+        ctx.restore();
+        continue;
+      }
       const heal = k.type==='heal';
       const col = heal ? '#7dff9a' : '#5cc8ff';
-      // halo
       ctx.globalAlpha=0.35+0.2*Math.sin(k.phase*2);
       ctx.fillStyle=col;
       ctx.beginPath(); ctx.arc(x+k.w/2, y+k.h/2, 8, 0, Math.PI*2); ctx.fill();
       ctx.globalAlpha=1;
-      // cristal (losange)
       ctx.save();
       ctx.translate(x+k.w/2, y+k.h/2); ctx.rotate(Math.PI/4);
       ctx.fillStyle=col; ctx.fillRect(-4,-4,8,8);
       ctx.fillStyle='#ffffff'; ctx.fillRect(-2,-2,3,3);
       ctx.restore();
-      // symbole
       ctx.fillStyle='#06210f';
-      if (heal){ ctx.fillRect(x+4, y+2, 2, 6); ctx.fillRect(x+2, y+4, 6, 2); } // croix
+      if (heal){ ctx.fillRect(x+4, y+2, 2, 6); ctx.fillRect(x+2, y+4, 6, 2); }
     }
+  }
+
+  function drawThrown(){
+    if (!thrown) return;
+    const x = px(thrown.x), y = thrown.y;
+    const c = player.col;
+    ctx.globalAlpha=0.35; ctx.fillStyle=c.core;
+    ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(thrown.spin);
+    ctx.lineCap='round';
+    ctx.strokeStyle=c.core; ctx.lineWidth=2.6;
+    ctx.beginPath(); ctx.moveTo(-7,0); ctx.lineTo(7,0); ctx.stroke();
+    ctx.strokeStyle=c.hot; ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.moveTo(-7,0); ctx.lineTo(7,0); ctx.stroke();
+    ctx.restore();
+    ctx.lineWidth=1;
+  }
+
+  function drawRings(){
+    for (const r of rings){
+      ctx.globalAlpha = Math.max(0, 1 - r.r/r.max) * 0.6;
+      ctx.strokeStyle = r.col; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(px(r.x), r.y, r.r, 0, Math.PI*2); ctx.stroke();
+    }
+    ctx.globalAlpha=1; ctx.lineWidth=1;
   }
 
   function drawPlayer(){
     const p=player, x=px(p.x), y=p.y;
     if (p.rolling>0){
-      // Roulade : le corps tourne sur lui-même (sabre rangé)
       const cx = x+p.w/2, cy = y+p.h/2;
       const ang = (1 - p.rolling/ROLL_DUR) * Math.PI*2 * p.face;
       ctx.save();
       ctx.translate(cx, cy); ctx.rotate(ang);
-      ctx.fillStyle='#6b4a2a'; ctx.fillRect(-5,-5,10,10);   // corps roulé
-      ctx.fillStyle='#8a6238'; ctx.fillRect(-4,-4,8,5);
-      ctx.fillStyle='#e8c9a0'; ctx.fillRect(-2,-4,5,4);     // tête
+      ctx.fillStyle=p.body.robe; ctx.fillRect(-5,-5,10,10);
+      ctx.fillStyle=p.body.torso; ctx.fillRect(-4,-4,8,5);
+      ctx.fillStyle='#e8c9a0'; ctx.fillRect(-2,-4,5,4);
       ctx.restore();
-      return;   // pas de sabre pendant l'esquive
+      return;
     }
     const fury = p.fury>0;
-    // Aura de Fureur autour du héros
     if (fury){
       ctx.globalAlpha = 0.18 + 0.1*Math.sin(state.time*0.4);
       ctx.fillStyle = '#5cc8ff';
@@ -1170,22 +1535,16 @@
       ctx.globalAlpha = 1;
     }
     if (p.invuln>0 && p.invuln%6<3){ /* clignote */ } else {
-      // cape / tunique
-      ctx.fillStyle='#6b4a2a'; ctx.fillRect(x+1, y+6, 10, 12);   // robe
-      ctx.fillStyle='#8a6238'; ctx.fillRect(x+2, y+6, 8, 6);     // torse
-      ctx.fillStyle='#e8c9a0'; ctx.fillRect(x+3, y, 6, 7);       // tête
-      ctx.fillStyle='#4a3420'; ctx.fillRect(x+3, y, 6, 2);       // cheveux
-      ctx.fillStyle='#3a2818';
-      ctx.fillRect(x+4, y+16, 2, 6); ctx.fillRect(x+7, y+16, 2, 6); // jambes
+      ctx.fillStyle=p.body.robe; ctx.fillRect(x+1, y+6, 10, 12);
+      ctx.fillStyle=p.body.torso; ctx.fillRect(x+2, y+6, 8, 6);
+      ctx.fillStyle='#e8c9a0'; ctx.fillRect(x+3, y, 6, 7);
+      ctx.fillStyle=p.body.hair; ctx.fillRect(x+3, y, 6, 2);
+      ctx.fillStyle=p.body.legs;
+      ctx.fillRect(x+4, y+16, 2, 6); ctx.fillRect(x+7, y+16, 2, 6);
     }
-    // Couleurs de lame (verte, ou bleue en Fureur)
-    const cTrail = fury ? '160,215,255' : '130,245,170';
-    const cGlow  = fury ? '90,200,255'  : '120,240,160';
-    const cCore  = fury ? '#5cc8ff' : '#4dff8a';
-    const cHot   = fury ? '#eaf7ff' : '#eafff0';
-    // Sabre laser
+    const cTrail = p.col.trail, cGlow = p.col.glow;
+    const cCore = p.col.core, cHot = p.col.hot;
     ctx.lineCap='round';
-    // Traînée lumineuse (épaisseur variable selon le coup)
     if (p.saberOn){
       for (const tr of saberTrail){
         const a = tr.life/9, w = tr.tw || 1;
@@ -1196,13 +1555,12 @@
         ctx.stroke();
       }
     }
-    // Manche + lame courante (le moulinet a une lame plus large et brillante)
     const seg = saberSeg();
     const bx = px(seg.gx), by = seg.gy, ex = px(seg.tx), ey = seg.ty;
     const w = (p.attack>0 && !p.diving && COMBO[p.combo]) ? COMBO[p.combo].tw : 1;
     ctx.fillStyle='#c9ccd4';
     ctx.fillRect(bx-1, by-2, 3, 5);
-    if (p.saberOn){
+    if (p.saberOn && !thrown){
       ctx.strokeStyle='rgba('+cGlow+','+(0.3+0.12*(w-1)).toFixed(3)+')'; ctx.lineWidth=6*w;
       ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(ex,ey); ctx.stroke();
       ctx.strokeStyle=cCore; ctx.lineWidth=3.4*w; ctx.globalAlpha=0.75;
@@ -1237,35 +1595,40 @@
   }
 
   function drawHud(){
+    const p = player;
     // coeurs
-    for(let i=0;i<player.maxhp;i++){
-      ctx.fillStyle = i<player.hp ? '#ff5b7a' : '#3a2030';
+    for(let i=0;i<p.maxhp;i++){
+      ctx.fillStyle = i<p.hp ? '#ff5b7a' : '#3a2030';
       const hx=6+i*12, hy=6;
       ctx.fillRect(hx+1,hy,3,3); ctx.fillRect(hx+5,hy,3,3);
       ctx.fillRect(hx,hy+2,9,3); ctx.fillRect(hx+2,hy+5,5,2); ctx.fillRect(hx+3,hy+7,3,1);
     }
+    // jauge d'énergie de Force (encoche = coût du pouvoir)
+    const ew=54, ex=6, ey=17;
+    ctx.fillStyle='#101d33'; ctx.fillRect(ex, ey, ew, 4);
+    ctx.fillStyle='#5ca8ff'; ctx.fillRect(ex, ey, ew*p.energy/p.energyMax, 4);
+    const notch = ew*p.charDef.power.cost/p.energyMax;
+    ctx.fillStyle='#cfe3ff'; ctx.fillRect(ex+notch|0, ey-1, 1, 6);
     // jauge de Fureur
-    if (player.fury>0){
-      const fw=54, fx=6, fy=18;
-      ctx.fillStyle='#123049'; ctx.fillRect(fx, fy, fw, 4);
-      ctx.fillStyle='#5cc8ff'; ctx.fillRect(fx, fy, fw*player.fury/FURY_TIME, 4);
-      ctx.fillStyle='#bfe8ff'; ctx.font='7px "Courier New"'; ctx.textAlign='left';
-      ctx.fillText('FUREUR', fx, fy+11);
+    if (p.fury>0){
+      ctx.fillStyle='#123049'; ctx.fillRect(ex, ey+7, ew, 3);
+      ctx.fillStyle='#5cc8ff'; ctx.fillRect(ex, ey+7, ew*p.fury/FURY_TIME, 3);
     }
-    // vaincus
+    // vaincus + progression + cristaux
     ctx.fillStyle='#8fe3ff'; ctx.font='8px "Courier New"'; ctx.textAlign='right';
     ctx.fillText('VAINCUS '+killCount, W-6, 12);
-    // progression
-    const prog = Math.min(1, player.x/GOAL_X);
+    const prog = Math.min(1, p.x/GOAL_X);
     ctx.fillStyle='#1b2740'; ctx.fillRect(W-70, 16, 62, 3);
     ctx.fillStyle='#5ce0ff'; ctx.fillRect(W-70, 16, 62*prog, 3);
+    ctx.fillStyle='#ffd24d';
+    ctx.fillText('◆ '+runCrystals, W-6, 30);
 
     // indicateur de combo au-dessus du héros
-    if (player.comboShow>0 && player.combo>0){
-      ctx.globalAlpha = Math.min(1, player.comboShow/12);
-      ctx.fillStyle = player.combo>=COMBO.length-1 ? '#ffd24d' : '#8fe3ff';
+    if (p.comboShow>0 && p.combo>0){
+      ctx.globalAlpha = Math.min(1, p.comboShow/12);
+      ctx.fillStyle = p.combo>=COMBO.length-1 ? '#ffd24d' : '#8fe3ff';
       ctx.font='bold 9px "Courier New"'; ctx.textAlign='center';
-      ctx.fillText('COMBO ×'+(player.combo+1), px(player.x)+player.w/2, player.y-6);
+      ctx.fillText('COMBO ×'+(p.combo+1), px(p.x)+p.w/2, p.y-6);
       ctx.globalAlpha=1;
     }
 
@@ -1279,22 +1642,175 @@
     ctx.textAlign='left';
   }
 
-  function drawScreen(title, sub, sub2){
+  // Mini-figurine d'un personnage (cartes de sélection)
+  function drawMini(x, y, ch){
+    ctx.fillStyle=ch.body.robe; ctx.fillRect(x+1, y+6, 10, 12);
+    ctx.fillStyle=ch.body.torso; ctx.fillRect(x+2, y+6, 8, 6);
+    ctx.fillStyle='#e8c9a0'; ctx.fillRect(x+3, y, 6, 7);
+    ctx.fillStyle=ch.body.hair; ctx.fillRect(x+3, y, 6, 2);
+    ctx.fillStyle=ch.body.legs;
+    ctx.fillRect(x+4, y+16, 2, 6); ctx.fillRect(x+7, y+16, 2, 6);
+    ctx.lineCap='round';
+    ctx.strokeStyle='rgba('+ch.col.glow+',0.4)'; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(x+13, y+10); ctx.lineTo(x+20, y-5); ctx.stroke();
+    ctx.strokeStyle=ch.col.core; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(x+13, y+10); ctx.lineTo(x+20, y-5); ctx.stroke();
+    ctx.lineWidth=1;
+  }
+
+  function blink(){ return Math.floor(state.time/25)%2===0; }
+
+  function drawTitle(){
+    uiZones.length = 0;
     drawBg();
-    ctx.fillStyle='rgba(3,5,12,0.72)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='rgba(3,5,12,0.65)'; ctx.fillRect(0,0,W,H);
     ctx.textAlign='center';
-    ctx.fillStyle='#4dff8a'; ctx.font='bold 18px "Courier New"';
-    ctx.fillText(title, W/2, H/2-18);
-    ctx.fillStyle='#cfe3ff'; ctx.font='9px "Courier New"';
-    ctx.fillText(sub, W/2, H/2+4);
-    if (sub2){ ctx.fillStyle='#8fa4cc'; ctx.fillText(sub2, W/2, H/2+18); }
-    // petit sabre décoratif clignotant
-    if (Math.floor(state.time/20)%2===0){
-      ctx.strokeStyle='#4dff8a'; ctx.lineWidth=3; ctx.lineCap='round';
-      ctx.beginPath(); ctx.moveTo(W/2-24, H/2+40); ctx.lineTo(W/2+24, H/2+40); ctx.stroke();
-      ctx.lineWidth=1;
+    ctx.fillStyle='#4dff8a'; ctx.font='bold 20px "Courier New"';
+    ctx.fillText('SABRE & ÉTOILES', W/2, 58);
+    ctx.fillStyle='#8fa4cc'; ctx.font='9px "Courier New"';
+    ctx.fillText('Un Castlevania-like au sabre laser', W/2, 74);
+    if (blink()){
+      ctx.fillStyle='#cfe3ff'; ctx.font='bold 10px "Courier New"';
+      ctx.fillText('TOUCHE L\'ÉCRAN  ·  ESPACE', W/2, 108);
     }
+    ctx.fillStyle='#ffd24d'; ctx.font='9px "Courier New"';
+    ctx.fillText('◆ '+save.crystals, W/2 - (save.bestRank?34:0), 132);
+    if (save.bestRank){
+      ctx.fillStyle='#8fe3ff';
+      ctx.fillText('MEILLEUR RANG : '+save.bestRank, W/2+38, 132);
+    }
+    ctx.fillStyle='#546a94'; ctx.font='7px "Courier New"';
+    ctx.fillText('3 héros · pouvoirs de Force · améliorations permanentes', W/2, 158);
     ctx.textAlign='left';
+    zone(0, 0, W, H, gotoSelect);
+  }
+
+  function drawSelect(){
+    uiZones.length = 0;
+    drawBg();
+    ctx.fillStyle='rgba(3,5,12,0.78)'; ctx.fillRect(0,0,W,H);
+    ctx.font='bold 9px "Courier New"'; ctx.textAlign='left';
+    ctx.fillStyle='#cfe3ff'; ctx.fillText('CHOISIS TON HÉROS', 8, 14);
+    ctx.textAlign='right'; ctx.fillStyle='#ffd24d';
+    ctx.fillText('◆ '+save.crystals, W-8, 14);
+
+    CHAR_IDS.forEach((id, i) => {
+      const ch = CHARS[id];
+      const cx = 8+i*104, cy = 20, cw = 96, chh = 102;
+      zone(cx, cy, cw, chh, () => tryBuyChar(id));
+      ctx.fillStyle='rgba(13,21,38,0.92)';
+      ctx.fillRect(cx, cy, cw, chh);
+      ctx.strokeStyle = menu.char===id ? ch.col.core : '#26324e';
+      ctx.lineWidth = menu.char===id ? 2 : 1;
+      ctx.strokeRect(cx+0.5, cy+0.5, cw-1, chh-1);
+      ctx.lineWidth=1;
+      ctx.textAlign='center';
+      ctx.fillStyle=ch.col.core; ctx.font='bold 10px "Courier New"';
+      ctx.fillText(ch.name, cx+cw/2, cy+13);
+      ctx.fillStyle='#8fa4cc'; ctx.font='7px "Courier New"';
+      ctx.fillText(ch.cls, cx+cw/2, cy+23);
+      drawMini(cx+cw/2-10, cy+30, ch);
+      ctx.fillStyle='#cfe3ff'; ctx.font='7px "Courier New"';
+      ctx.fillText('VIE '+ch.hp+'  ·  VIT '+(ch.spd>1?'++':ch.spd<1?'−':'='), cx+cw/2, cy+64);
+      ctx.fillStyle=ch.col.core;
+      ctx.fillText(ch.power.name, cx+cw/2, cy+76);
+      ctx.fillStyle='#7f92b5'; ctx.font='6px "Courier New"';
+      ctx.fillText(ch.power.desc, cx+cw/2, cy+85);
+      ctx.fillText(ch.power.cost+' énergie', cx+cw/2, cy+94);
+      if (!save.chars[id]){
+        ctx.fillStyle='rgba(0,0,0,0.68)'; ctx.fillRect(cx, cy, cw, chh);
+        ctx.fillStyle='#ffd24d'; ctx.font='bold 9px "Courier New"';
+        ctx.fillText('◆ '+ch.cost, cx+cw/2, cy+50);
+        ctx.fillStyle = save.crystals>=ch.cost ? '#7dff9a' : '#8fa4cc';
+        ctx.font='7px "Courier New"';
+        ctx.fillText(save.crystals>=ch.cost ? (blink()?'TOUCHER POUR RECRUTER':'') : 'VERROUILLÉ', cx+cw/2, cy+62);
+      }
+    });
+
+    // boutons bas
+    const by = 130, bh = 20;
+    zone(32, by, 116, bh, () => { state.mode='shop'; menu.sel=0; Snd.uiSel(); });
+    ctx.fillStyle='rgba(20,32,56,0.95)'; ctx.fillRect(32, by, 116, bh);
+    ctx.strokeStyle='#3a4d78'; ctx.strokeRect(32.5, by+0.5, 115, bh-1);
+    ctx.fillStyle='#ffd24d'; ctx.font='bold 8px "Courier New"'; ctx.textAlign='center';
+    ctx.fillText('ATELIER ◆', 32+58, by+13);
+
+    zone(172, by, 116, bh, () => startRun(menu.char));
+    ctx.fillStyle='rgba(20,50,36,0.95)'; ctx.fillRect(172, by, 116, bh);
+    ctx.strokeStyle='#3a7a58'; ctx.strokeRect(172.5, by+0.5, 115, bh-1);
+    ctx.fillStyle='#7dff9a';
+    ctx.fillText('COMMENCER · '+CHARS[menu.char].name, 172+58, by+13);
+
+    ctx.fillStyle='#546a94'; ctx.font='7px "Courier New"';
+    ctx.fillText('← → naviguer · ENTRÉE valider · ÉCHAP retour', W/2, 168);
+    ctx.textAlign='left';
+
+    // surbrillance clavier
+    if (menu.sel>=uiZones.length) menu.sel=uiZones.length-1;
+    const z = uiZones[menu.sel];
+    if (z){
+      ctx.strokeStyle='#8fe3ff'; ctx.lineWidth=1;
+      ctx.setLineDash([3,2]);
+      ctx.strokeRect(z.x-2.5, z.y-2.5, z.w+5, z.h+5);
+      ctx.setLineDash([]);
+    }
+  }
+
+  function drawShop(){
+    uiZones.length = 0;
+    drawBg();
+    ctx.fillStyle='rgba(3,5,12,0.82)'; ctx.fillRect(0,0,W,H);
+    ctx.font='bold 9px "Courier New"'; ctx.textAlign='left';
+    ctx.fillStyle='#ffd24d'; ctx.fillText('ATELIER — AMÉLIORATIONS PERMANENTES', 8, 14);
+    ctx.textAlign='right';
+    ctx.fillText('◆ '+save.crystals, W-8, 14);
+
+    SHOP.forEach((row, i) => {
+      const ry = 24+i*34, rh = 30;
+      zone(14, ry, W-28, rh, () => tryBuyUpgrade(row));
+      const lvl = save[row.k];
+      ctx.fillStyle='rgba(13,21,38,0.92)'; ctx.fillRect(14, ry, W-28, rh);
+      ctx.strokeStyle='#26324e'; ctx.strokeRect(14.5, ry+0.5, W-29, rh-1);
+      ctx.textAlign='left';
+      ctx.fillStyle='#cfe3ff'; ctx.font='bold 8px "Courier New"';
+      ctx.fillText(row.name, 20, ry+12);
+      // pastilles de niveau
+      for (let n=0;n<3;n++){
+        ctx.fillStyle = n<lvl ? '#7dff9a' : '#26324e';
+        ctx.beginPath(); ctx.arc(110+n*10, ry+9, 3, 0, Math.PI*2); ctx.fill();
+      }
+      ctx.fillStyle='#7f92b5'; ctx.font='7px "Courier New"';
+      ctx.fillText(lvl<3 ? ('Prochain : '+row.desc[lvl]) : 'Niveau maximum atteint', 20, ry+23);
+      ctx.textAlign='right';
+      if (lvl<3){
+        const cost = row.costs[lvl];
+        ctx.fillStyle = save.crystals>=cost ? '#ffd24d' : '#6a5a30';
+        ctx.font='bold 9px "Courier New"';
+        ctx.fillText('◆ '+cost, W-20, ry+18);
+      } else {
+        ctx.fillStyle='#7dff9a'; ctx.font='bold 9px "Courier New"';
+        ctx.fillText('MAX', W-20, ry+18);
+      }
+    });
+
+    const by = 132, bh = 20;
+    zone(W/2-58, by, 116, bh, () => { state.mode='select'; menu.sel=4; Snd.uiMove(); });
+    ctx.fillStyle='rgba(20,32,56,0.95)'; ctx.fillRect(W/2-58, by, 116, bh);
+    ctx.strokeStyle='#3a4d78'; ctx.strokeRect(W/2-57.5, by+0.5, 115, bh-1);
+    ctx.fillStyle='#cfe3ff'; ctx.font='bold 8px "Courier New"'; ctx.textAlign='center';
+    ctx.fillText('RETOUR', W/2, by+13);
+
+    ctx.fillStyle='#546a94'; ctx.font='7px "Courier New"';
+    ctx.fillText('Les cristaux ◆ récoltés en mission restent acquis', W/2, 166);
+    ctx.textAlign='left';
+
+    if (menu.sel>=uiZones.length) menu.sel=uiZones.length-1;
+    const z = uiZones[menu.sel];
+    if (z){
+      ctx.strokeStyle='#8fe3ff'; ctx.setLineDash([3,2]);
+      ctx.strokeRect(z.x-2.5, z.y-2.5, z.w+5, z.h+5);
+      ctx.setLineDash([]);
+    }
   }
 
   function fmtTime(frames){
@@ -1302,37 +1818,42 @@
     return (m>0 ? m+'m ' : '') + (s%60) + 's';
   }
   function drawEndScreen(win){
+    uiZones.length = 0;
     drawBg();
-    ctx.fillStyle='rgba(3,5,12,0.82)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='rgba(3,5,12,0.84)'; ctx.fillRect(0,0,W,H);
     ctx.textAlign='center';
     ctx.fillStyle = win ? '#4dff8a' : '#ff6b6b';
-    ctx.font='bold 16px "Courier New"';
-    ctx.fillText(win ? 'MISSION ACCOMPLIE' : 'TOMBÉ AU COMBAT', W/2, 30);
-    // Rang
+    ctx.font='bold 15px "Courier New"';
+    ctx.fillText(win ? 'MISSION ACCOMPLIE' : 'TOMBÉ AU COMBAT', W/2, 26);
     const rankCol = {S:'#ffd24d',A:'#8fe3ff',B:'#7dff9a',C:'#cfe3ff',D:'#8fa4cc'}[state.rank] || '#fff';
-    ctx.fillStyle=rankCol; ctx.font='bold 38px "Courier New"';
-    ctx.fillText(state.rank, W/2, 78);
+    ctx.fillStyle=rankCol; ctx.font='bold 34px "Courier New"';
+    ctx.fillText(state.rank, W/2, 66);
     ctx.fillStyle='#7f92b5'; ctx.font='7px "Courier New"';
-    ctx.fillText('RANG', W/2, 90);
-    // Statistiques
+    ctx.fillText('RANG', W/2, 77);
     ctx.font='9px "Courier New"';
     const rows = [
+      ['Héros', CHARS[menu.char].name],
       ['Niveau atteint', state.level + ' / ' + LEVELS.length],
       ['Ennemis vaincus', ''+killCount],
-      ['Temps', fmtTime(state.runTime)]
+      ['Temps', fmtTime(state.runTime)],
+      ['Cristaux récoltés', '+'+runCrystals+' ◆']
     ];
-    let yy = 112;
+    let yy = 96;
     rows.forEach(r => {
-      ctx.textAlign='left';  ctx.fillStyle='#8fa4cc'; ctx.fillText(r[0], W/2-72, yy);
-      ctx.textAlign='right'; ctx.fillStyle='#e8f0ff'; ctx.fillText(r[1], W/2+72, yy);
-      yy += 13;
+      ctx.textAlign='left';  ctx.fillStyle='#8fa4cc'; ctx.fillText(r[0], W/2-78, yy);
+      ctx.textAlign='right'; ctx.fillStyle = r[0].startsWith('Cristaux') ? '#ffd24d' : '#e8f0ff';
+      ctx.fillText(r[1], W/2+78, yy);
+      yy += 12;
     });
     ctx.textAlign='center';
-    if (Math.floor(state.time/25)%2===0){
+    ctx.fillStyle='#ffd24d'; ctx.font='bold 9px "Courier New"';
+    ctx.fillText('TOTAL : ◆ '+save.crystals, W/2, yy+6);
+    if (blink()){
       ctx.fillStyle='#9fb0d0'; ctx.font='8px "Courier New"';
-      ctx.fillText('ESPACE / écran pour rejouer', W/2, H-12);
+      ctx.fillText('Toucher / ENTRÉE : dépenser tes cristaux', W/2, H-10);
     }
     ctx.textAlign='left';
+    zone(0, 0, W, H, gotoSelect);
   }
 
   // ---------- Boucle principale ----------
@@ -1349,13 +1870,16 @@
       drawPlatforms();
       drawPickups();
       troopers.forEach(drawEnemy);
-      drawBolts(); drawPlayer(); drawSparks();
+      drawBolts(); drawThrown(); drawRings(); drawPlayer(); drawSparks();
       ctx.restore();
       state.shake *= 0.82;
       drawHud();
     } else if (state.mode==='title'){
-      drawScreen('SABRE & ÉTOILES', 'Appuie sur ESPACE ou touche l\'écran',
-                 '2 niveaux · cristaux · deux gardes à terrasser');
+      drawTitle();
+    } else if (state.mode==='select'){
+      drawSelect();
+    } else if (state.mode==='shop'){
+      drawShop();
     } else if (state.mode==='win'){
       drawEndScreen(true);
     } else if (state.mode==='dead'){
@@ -1364,7 +1888,7 @@
     requestAnimationFrame(loop);
   }
 
-  loadLevel(0, false);
+  loadLevel(0, false);   // décor pour l'écran titre
   loop();
 })();
 </script>

@@ -37,14 +37,37 @@
     text-align:center; padding:0 12px;
   }
   /* Commandes tactiles */
-  #touch{
-    display:none;
-    position:fixed; left:0; right:0; bottom:0;
-    justify-content:space-between; align-items:flex-end;
-    padding:0 20px calc(28px + env(safe-area-inset-bottom));
-    pointer-events:none;
+  #touch{ display:none; position:fixed; inset:0; pointer-events:none; }
+  /* Zone glissante de déplacement (mini-joystick flottant) */
+  #pad{
+    position:absolute; left:0; bottom:0;
+    width:54%; height:48%;
+    pointer-events:auto; touch-action:none;
   }
-  #touch .cluster{ display:flex; align-items:flex-end; gap:28px; pointer-events:auto; }
+  #pad .padhint{
+    position:absolute; left:50%; bottom:34px; transform:translateX(-50%);
+    font-family:'Courier New',monospace; font-size:11px; letter-spacing:1px;
+    color:rgba(150,180,230,.5); white-space:nowrap; pointer-events:none;
+    transition:opacity .2s;
+  }
+  #stick{
+    position:absolute; width:108px; height:108px; margin:-54px 0 0 -54px;
+    border-radius:50%; border:2px solid rgba(90,140,220,.4);
+    background:radial-gradient(circle,rgba(45,75,130,.28),rgba(20,35,60,.1));
+    display:none; pointer-events:none;
+  }
+  #stick.on{ display:block; }
+  #knob{
+    position:absolute; left:50%; top:50%; width:50px; height:50px; margin:-25px 0 0 -25px;
+    border-radius:50%; background:rgba(80,130,220,.62);
+    border:2px solid rgba(160,195,255,.75);
+    box-shadow:0 2px 12px rgba(0,0,0,.4);
+  }
+  /* Boutons d'action (à droite) */
+  .cluster{
+    position:absolute; right:20px; bottom:calc(28px + env(safe-area-inset-bottom));
+    display:flex; align-items:flex-end; gap:24px; pointer-events:auto;
+  }
   .btn{
     width:78px; height:78px; border-radius:50%;
     background:rgba(30,45,75,.5);
@@ -63,11 +86,11 @@
     position:absolute; bottom:8px; font-size:9px; letter-spacing:.5px;
     color:rgba(200,220,255,.7); font-family:'Courier New',monospace;
   }
-  @media (pointer:coarse){ #touch{ display:flex; } }
+  @media (pointer:coarse){ #touch{ display:block; } }
   /* petits écrans : boutons un peu plus compacts */
   @media (pointer:coarse) and (max-width:360px){
     .btn{ width:66px; height:66px; font-size:27px; }
-    #touch .cluster{ gap:18px; }
+    .cluster{ gap:18px; }
   }
 </style>
 </head>
@@ -78,9 +101,9 @@
 </div>
 
 <div id="touch">
-  <div class="cluster">
-    <div class="btn" data-k="left">◀</div>
-    <div class="btn" data-k="right">▶</div>
+  <div id="pad">
+    <div class="padhint">◄ glisse le pouce pour te déplacer ►</div>
+    <div id="stick"><div id="knob"></div></div>
   </div>
   <div class="cluster">
     <div class="btn saber" data-k="attack">⚔</div>
@@ -127,6 +150,59 @@
     b.addEventListener('mouseleave', off);
   });
   cv.addEventListener('pointerdown', () => { if (state.mode!=='play') start(); });
+
+  // Zone tactile glissante : mini-joystick flottant pour gauche/droite
+  const pad = document.getElementById('pad');
+  const stick = document.getElementById('stick');
+  const knob = document.getElementById('knob');
+  const padHint = pad.querySelector('.padhint');
+  let padId = null, padOX = 0;
+  const DEAD = 9, KNOB_MAX = 46;
+
+  function padStart(e){
+    if (padId !== null) return;
+    const t = e.changedTouches ? e.changedTouches[0] : e;
+    padId = e.changedTouches ? t.identifier : 'mouse';
+    padOX = t.clientX;
+    const r = pad.getBoundingClientRect();
+    stick.style.left = (t.clientX - r.left) + 'px';
+    stick.style.top  = (t.clientY - r.top) + 'px';
+    stick.classList.add('on');
+    knob.style.transform = 'translate(0,0)';
+    if (padHint) padHint.style.opacity = '0';
+    e.preventDefault();
+    if (state.mode !== 'play') start();
+  }
+  function padMove(e){
+    if (padId === null) return;
+    let t = e;
+    if (e.changedTouches){
+      t = [...e.changedTouches].find(x => x.identifier === padId);
+      if (!t) return;
+    }
+    const dx = t.clientX - padOX;
+    keys.left  = dx < -DEAD;
+    keys.right = dx >  DEAD;
+    const kx = Math.max(-KNOB_MAX, Math.min(KNOB_MAX, dx));
+    knob.style.transform = 'translate(' + kx + 'px,0)';
+    e.preventDefault();
+  }
+  function padEnd(e){
+    if (padId === null) return;
+    if (e.changedTouches && ![...e.changedTouches].some(x => x.identifier === padId)) return;
+    padId = null;
+    keys.left = false; keys.right = false;
+    stick.classList.remove('on');
+    if (padHint) padHint.style.opacity = '';
+    if (e.cancelable) e.preventDefault();
+  }
+  pad.addEventListener('touchstart', padStart, {passive:false});
+  pad.addEventListener('touchmove',  padMove,  {passive:false});
+  pad.addEventListener('touchend',   padEnd,   {passive:false});
+  pad.addEventListener('touchcancel',padEnd,   {passive:false});
+  pad.addEventListener('mousedown',  padStart);
+  window.addEventListener('mousemove', padMove);
+  window.addEventListener('mouseup',   padEnd);
 
   // ---------- Constantes physique ----------
   const GRAV = 0.5, MOVE = 1.4, FRICTION = 0.78, JUMP = 8.2;

@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+<title>Sabre &amp; Étoiles — Jeu de plateforme</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body{
+    height:100%;
+    background:#05060a;
+    color:#cfe3ff;
+    font-family:'Courier New',monospace;
+    overflow:hidden;
+    -webkit-user-select:none; user-select:none;
+    -webkit-tap-highlight-color:transparent;
+  }
+  #wrap{
+    position:fixed; inset:0;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    gap:8px;
+  }
+  #game{
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+    background:#05060a;
+    border:2px solid #1b2740;
+    border-radius:6px;
+    box-shadow:0 0 40px rgba(60,120,255,.15);
+    max-width:100%;
+    max-height:78vh;
+    touch-action:none;
+  }
+  .hint{
+    font-size:12px; color:#546a94; letter-spacing:1px;
+    text-align:center; padding:0 12px;
+  }
+  /* Commandes tactiles */
+  #touch{
+    display:none;
+    position:fixed; bottom:0; left:0; right:0;
+    justify-content:space-between;
+    padding:14px 18px calc(14px + env(safe-area-inset-bottom));
+    pointer-events:none;
+  }
+  #touch .cluster{ display:flex; gap:14px; pointer-events:auto; }
+  .btn{
+    width:64px; height:64px; border-radius:50%;
+    background:rgba(30,45,75,.55);
+    border:2px solid rgba(90,140,220,.5);
+    color:#dbe8ff; font-size:26px;
+    display:flex; align-items:center; justify-content:center;
+    backdrop-filter:blur(2px);
+    touch-action:none;
+  }
+  .btn:active, .btn.on{ background:rgba(70,120,220,.7); }
+  .btn.saber{ background:rgba(40,90,60,.6); border-color:rgba(90,230,140,.6); }
+  .btn.saber:active,.btn.saber.on{ background:rgba(60,180,100,.8); }
+  @media (pointer:coarse){ #touch{ display:flex; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="320" height="180"></canvas>
+  <div class="hint">← → déplacer &nbsp;·&nbsp; ESPACE / ↑ sauter &nbsp;·&nbsp; J / K frapper au sabre &nbsp;·&nbsp; frappe les tirs pour les renvoyer</div>
+</div>
+
+<div id="touch">
+  <div class="cluster">
+    <div class="btn" data-k="left">◀</div>
+    <div class="btn" data-k="right">▶</div>
+  </div>
+  <div class="cluster">
+    <div class="btn saber" data-k="attack">⚔</div>
+    <div class="btn" data-k="jump">▲</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const cv  = document.getElementById('game');
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  ctx.imageSmoothingEnabled = false;
+
+  // ---------- Entrées ----------
+  const keys = { left:false, right:false, jump:false, attack:false };
+  const keyMap = {
+    ArrowLeft:'left', KeyA:'left',
+    ArrowRight:'right', KeyD:'right',
+    ArrowUp:'jump', KeyW:'jump', Space:'jump',
+    KeyJ:'attack', KeyK:'attack', KeyX:'attack'
+  };
+  addEventListener('keydown', e => {
+    const k = keyMap[e.code];
+    if (k){ keys[k] = true; e.preventDefault();
+      if (state.mode !== 'play') start(); }
+  }, {passive:false});
+  addEventListener('keyup', e => {
+    const k = keyMap[e.code]; if (k){ keys[k] = false; e.preventDefault(); }
+  }, {passive:false});
+
+  // Boutons tactiles
+  document.querySelectorAll('#touch .btn').forEach(b => {
+    const k = b.dataset.k === 'attack' ? 'attack' : b.dataset.k === 'jump' ? 'jump' : b.dataset.k;
+    const on  = e => { e.preventDefault(); keys[k]=true; b.classList.add('on');
+      if (state.mode!=='play') start(); };
+    const off = e => { e.preventDefault(); keys[k]=false; b.classList.remove('on'); };
+    b.addEventListener('touchstart', on,  {passive:false});
+    b.addEventListener('touchend',   off, {passive:false});
+    b.addEventListener('touchcancel',off, {passive:false});
+    b.addEventListener('mousedown',  on);
+    b.addEventListener('mouseup',    off);
+    b.addEventListener('mouseleave', off);
+  });
+  cv.addEventListener('pointerdown', () => { if (state.mode!=='play') start(); });
+
+  // ---------- Constantes physique ----------
+  const GRAV = 0.5, MOVE = 1.4, FRICTION = 0.78, JUMP = 8.2;
+  const GROUND = H - 24;
+
+  // ---------- Niveau ----------
+  const LEVEL_W = 1600;
+  const platforms = [
+    {x:0,   y:GROUND, w:LEVEL_W, h:24},         // sol
+    {x:140, y:126, w:64, h:8},
+    {x:250, y:98,  w:56, h:8},
+    {x:420, y:120, w:70, h:8},
+    {x:560, y:96,  w:60, h:8},
+    {x:700, y:128, w:80, h:8},
+    {x:840, y:104, w:60, h:8},
+    {x:980, y:130, w:70, h:8},
+    {x:1120,y:100, w:64, h:8},
+    {x:1260,y:124, w:80, h:8},
+    {x:1400,y:100, w:70, h:8},
+  ];
+  const GOAL_X = LEVEL_W - 60;
+
+  // ---------- État ----------
+  const state = { mode:'title', time:0, cam:0, best:0 };
+  let player, troopers, bolts, sparks, msg, msgT;
+
+  function resetWorld(){
+    player = {
+      x:30, y:GROUND-26, w:12, h:22, vx:0, vy:0,
+      onGround:false, face:1, hp:5, maxhp:5,
+      attack:0, attackCd:0, invuln:0, saberOn:true
+    };
+    troopers = [];
+    const spots = [
+      {x:300,dir:-1},{x:470,dir:1},{x:640,dir:-1},{x:790,dir:1},
+      {x:920,dir:-1},{x:1080,dir:1},{x:1210,dir:-1},{x:1360,dir:1},
+      {x:1480,dir:-1}
+    ];
+    spots.forEach(s => troopers.push({
+      x:s.x, y:GROUND-22, w:12, h:22, vx:0, dir:s.dir,
+      hp:2, shootCd:60 + Math.random()*60, alive:true, hit:0
+    }));
+    bolts = [];
+    sparks = [];
+    msg = ''; msgT = 0;
+    killCount = 0;
+  }
+
+  function start(){
+    resetWorld();
+    state.mode = 'play';
+    state.time = 0;
+    banner('QUE LA FORCE SOIT AVEC TOI');
+  }
+
+  function banner(t){ msg = t; msgT = 90; }
+
+  // ---------- Combat ----------
+  function boltSpawn(x,y,vx,vy,from){
+    bolts.push({x,y,vx,vy,from,r:2,life:180});
+  }
+  function spark(x,y,color,n=6){
+    for(let i=0;i<n;i++){
+      const a=Math.random()*Math.PI*2, s=0.5+Math.random()*2;
+      sparks.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:12+Math.random()*10,color});
+    }
+  }
+
+  function saberHitbox(){
+    // Rectangle de lame devant le joueur pendant la frappe
+    const reach = 18;
+    const x = player.face>0 ? player.x+player.w : player.x-reach;
+    return {x, y:player.y-4, w:reach, h:player.h+4};
+  }
+  function overlap(a,b){
+    return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+  }
+  function pointInRect(px,py,r){
+    return px>=r.x && px<=r.x+r.w && py>=r.y && py<=r.y+r.h;
+  }
+
+  // ---------- Boucle ----------
+  function update(){
+    const p = player;
+
+    // Déplacement
+    if (keys.left){ p.vx -= MOVE; p.face=-1; }
+    if (keys.right){ p.vx += MOVE; p.face=1; }
+    p.vx *= FRICTION;
+    if (Math.abs(p.vx) > 3) p.vx = 3*Math.sign(p.vx);
+
+    if (keys.jump && p.onGround){ p.vy = -JUMP; p.onGround=false; }
+    p.vy += GRAV; if (p.vy>10) p.vy=10;
+
+    p.x += p.vx;
+    // collisions horizontales avec bord du niveau
+    if (p.x<0) p.x=0;
+    if (p.x+p.w>LEVEL_W) p.x=LEVEL_W-p.w;
+
+    p.y += p.vy;
+    p.onGround=false;
+    for (const pl of platforms){
+      if (p.x+p.w>pl.x && p.x<pl.x+pl.w){
+        if (p.vy>=0 && p.y+p.h>pl.y && p.y+p.h < pl.y+pl.h+14 &&
+            p.y+p.h-p.vy <= pl.y+1){
+          p.y = pl.y-p.h; p.vy=0; p.onGround=true;
+        }
+      }
+    }
+
+    // Attaque au sabre
+    if (p.attackCd>0) p.attackCd--;
+    if (keys.attack && p.attack<=0 && p.attackCd<=0){
+      p.attack = 12; p.attackCd = 16;
+    }
+    if (p.attack>0) p.attack--;
+    if (p.invuln>0) p.invuln--;
+
+    const swinging = p.attack>6;   // fenêtre active de la lame
+    const blade = saberHitbox();
+
+    // Troopers
+    for (const t of troopers){
+      if (!t.alive){ continue; }
+      if (t.hit>0) t.hit--;
+      // patrouille
+      t.x += 0.4*t.dir;
+      if (t.x<20){ t.x=20; t.dir=1; }
+      if (t.x>LEVEL_W-32){ t.x=LEVEL_W-32; t.dir=-1; }
+      // vise le joueur s'il est proche et à l'écran
+      const dx = p.x - t.x;
+      if (Math.abs(dx) < 150){
+        t.dir = Math.sign(dx) || t.dir;
+        t.shootCd--;
+        if (t.shootCd<=0){
+          t.shootCd = 90 + Math.random()*50;
+          const bx = t.x + (t.dir>0? t.w: 0);
+          boltSpawn(bx, t.y+8, 2.4*t.dir, 0, 'trooper');
+          spark(bx, t.y+8, '#ff4d4d', 3);
+        }
+      }
+      // frappé par le sabre
+      if (swinging && overlap(blade, t)){
+        t.hp--; t.hit=8;
+        spark(t.x+t.w/2, t.y+t.h/2, '#8fe3ff', 8);
+        p.vx += -2*p.face; // léger recul
+        if (t.hp<=0){ t.alive=false; spark(t.x+6,t.y+10,'#ffffff',14); addMsgKill(); }
+      }
+      // contact direct : dégâts
+      if (t.alive && p.invuln<=0 && overlap(p,t)){
+        hurt(1); p.vx = 4*Math.sign(p.x-t.x || 1);
+      }
+    }
+
+    // Bolts
+    for (const b of bolts){
+      b.x += b.vx; b.y += b.vy; b.life--;
+      // renvoi par le sabre
+      if (swinging && b.from==='trooper' && pointInRect(b.x,b.y,blade)){
+        b.from='player'; b.vx = 3.2*p.face; b.vy = (Math.random()-0.5)*1.2;
+        spark(b.x,b.y,'#bff7ff',8);
+      }
+      // touche le joueur
+      if (b.from==='trooper' && p.invuln<=0 &&
+          b.x>p.x && b.x<p.x+p.w && b.y>p.y && b.y<p.y+p.h){
+        b.life=0; hurt(1);
+      }
+      // bolt renvoyé touche un trooper
+      if (b.from==='player'){
+        for (const t of troopers){
+          if (t.alive && b.x>t.x && b.x<t.x+t.w && b.y>t.y && b.y<t.y+t.h){
+            b.life=0; t.hp-=2; t.hit=8;
+            spark(t.x+6,t.y+10,'#8fe3ff',10);
+            if (t.hp<=0){ t.alive=false; spark(t.x+6,t.y+10,'#fff',14); addMsgKill(); }
+          }
+        }
+      }
+      if (b.x<0||b.x>LEVEL_W) b.life=0;
+    }
+    bolts = bolts.filter(b=>b.life>0);
+
+    // Sparks
+    for (const s of sparks){ s.x+=s.vx; s.y+=s.vy; s.vy+=0.08; s.life--; }
+    sparks = sparks.filter(s=>s.life>0);
+
+    // Caméra
+    state.cam = Math.max(0, Math.min(LEVEL_W-W, p.x - W/2 + 6));
+
+    // Bannière
+    if (msgT>0) msgT--;
+
+    // Victoire / défaite
+    if (p.x+p.w >= GOAL_X){
+      state.mode='win';
+      state.best = Math.max(state.best, aliveKilled());
+    }
+    if (p.hp<=0){ state.mode='dead'; }
+  }
+
+  let killCount=0;
+  function aliveKilled(){ return killCount; }
+  function addMsgKill(){ killCount++; }
+
+  function hurt(n){
+    const p=player;
+    p.hp-=n; p.invuln=60;
+    spark(p.x+p.w/2, p.y+8, '#ff6b6b', 8);
+    if (p.hp<=0) p.hp=0;
+  }
+
+  // ---------- Rendu ----------
+  let starL=[], starF=[];
+  for(let i=0;i<40;i++) starL.push({x:Math.random()*W, y:Math.random()*H*0.7, s:Math.random()<.3?2:1});
+  for(let i=0;i<60;i++) starF.push({x:Math.random()*LEVEL_W, y:Math.random()*H*0.6, s:1});
+
+  function px(x){ return Math.round(x - state.cam); }
+
+  function drawBg(){
+    // ciel dégradé
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#0a0f1e'); g.addColorStop(1,'#161033');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    // étoiles lointaines (parallaxe légère)
+    ctx.fillStyle='#3a4a78';
+    for(const s of starL){
+      const x=(s.x - state.cam*0.2)%W; const xx=x<0?x+W:x;
+      ctx.fillRect(xx|0, s.y|0, s.s, s.s);
+    }
+    // grande planète
+    const pxp = px(1180);
+    ctx.fillStyle='#2a1c4a'; ctx.beginPath();
+    ctx.arc(pxp, 44, 30, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle='#3b2a63'; ctx.beginPath();
+    ctx.arc(pxp-8, 38, 22, 0, Math.PI*2); ctx.fill();
+    // étoiles proches
+    ctx.fillStyle='#88a0d8';
+    for(const s of starF){
+      const x=px(s.x); if(x>-2&&x<W+2) ctx.fillRect(x, s.y|0, s.s, s.s);
+    }
+  }
+
+  function drawPlatforms(){
+    for(const pl of platforms){
+      const x=px(pl.x);
+      if (x>W || x+pl.w<0) continue;
+      if (pl.h>=24){ // sol métallique
+        ctx.fillStyle='#20283c'; ctx.fillRect(x, pl.y, pl.w, pl.h);
+        ctx.fillStyle='#2c3a58'; ctx.fillRect(x, pl.y, pl.w, 3);
+        ctx.fillStyle='#141a2a';
+        for(let i=0;i<pl.w;i+=16) ctx.fillRect(x+i, pl.y+6, 1, pl.h-6);
+      } else { // plateforme flottante
+        ctx.fillStyle='#3a4668'; ctx.fillRect(x, pl.y, pl.w, pl.h);
+        ctx.fillStyle='#556492'; ctx.fillRect(x, pl.y, pl.w, 2);
+        ctx.fillStyle='#222a40'; ctx.fillRect(x, pl.y+pl.h-1, pl.w, 1);
+      }
+    }
+    // porte de sortie
+    const gx=px(GOAL_X);
+    if (gx<W+40){
+      ctx.fillStyle='#1a2338'; ctx.fillRect(gx, GROUND-40, 26, 40);
+      ctx.fillStyle='#5ce0ff';
+      const glow = 0.5+0.5*Math.sin(state.time*0.1);
+      ctx.globalAlpha=0.5+glow*0.5;
+      ctx.fillRect(gx+4, GROUND-36, 18, 34);
+      ctx.globalAlpha=1;
+      ctx.fillStyle='#0a0f1e'; ctx.fillRect(gx+10, GROUND-20, 6, 6);
+    }
+  }
+
+  function drawTrooper(t){
+    const x=px(t.x), y=t.y;
+    if (x<-16||x>W+16) return;
+    const flash = t.hit>0 && (t.hit%4<2);
+    // corps (armure blanche)
+    ctx.fillStyle = flash ? '#ffb0b0' : '#e6ecf5';
+    ctx.fillRect(x+2, y+8, 8, 10);        // torse
+    ctx.fillRect(x+2, y, 8, 8);           // casque
+    ctx.fillStyle='#0d1220';
+    ctx.fillRect(x+3, y+2, 6, 3);         // visière
+    ctx.fillRect(x+4, y+18, 2, 4);        // jambe
+    ctx.fillRect(x+8, y+18, 2, 4);
+    // blaster
+    ctx.fillStyle='#2a2f3a';
+    if (t.dir>0) ctx.fillRect(x+10, y+11, 5, 2);
+    else ctx.fillRect(x-3, y+11, 5, 2);
+  }
+
+  function drawPlayer(){
+    const p=player, x=px(p.x), y=p.y;
+    if (p.invuln>0 && p.invuln%6<3){ /* clignote */ } else {
+      // cape / tunique
+      ctx.fillStyle='#6b4a2a'; ctx.fillRect(x+1, y+6, 10, 12);   // robe
+      ctx.fillStyle='#8a6238'; ctx.fillRect(x+2, y+6, 8, 6);     // torse
+      ctx.fillStyle='#e8c9a0'; ctx.fillRect(x+3, y, 6, 7);       // tête
+      ctx.fillStyle='#4a3420'; ctx.fillRect(x+3, y, 6, 2);       // cheveux
+      ctx.fillStyle='#3a2818';
+      ctx.fillRect(x+4, y+16, 2, 6); ctx.fillRect(x+7, y+16, 2, 6); // jambes
+    }
+    // Sabre laser
+    const swinging = p.attack>0;
+    const gripX = p.face>0 ? x+p.w-1 : x-1;
+    const gripY = y+9;
+    ctx.fillStyle='#c9ccd4'; // manche
+    ctx.fillRect(gripX-1, gripY, 3, 4);
+    if (p.saberOn){
+      const len = 20;
+      const active = p.attack>6;
+      // angle : haut au repos, horizontal pendant frappe
+      let ang = active ? 0 : -1.15;
+      if (swinging && !active) ang = -0.5;
+      const dir = p.face;
+      const bx = gripX+1, by = gripY+1;
+      const ex = bx + Math.cos(ang)*len*dir;
+      const ey = by + Math.sin(ang)*len;
+      // halo
+      ctx.strokeStyle='rgba(120,240,160,0.35)';
+      ctx.lineWidth=6; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(ex,ey); ctx.stroke();
+      // coeur de lame
+      ctx.strokeStyle='#eafff0'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(ex,ey); ctx.stroke();
+      ctx.strokeStyle='#4dff8a'; ctx.lineWidth=3.4;
+      ctx.globalAlpha=0.7;
+      ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(ex,ey); ctx.stroke();
+      ctx.globalAlpha=1; ctx.lineWidth=1;
+    }
+  }
+
+  function drawBolts(){
+    for(const b of bolts){
+      const x=px(b.x);
+      if (x<-4||x>W+4) continue;
+      const col = b.from==='player' ? '#7dff9a' : '#ff4d4d';
+      ctx.strokeStyle=col; ctx.lineWidth=2; ctx.lineCap='round';
+      ctx.beginPath();
+      ctx.moveTo(x, b.y); ctx.lineTo(x - Math.sign(b.vx)*4, b.y - b.vy*1.5);
+      ctx.stroke();
+      ctx.fillStyle='#fff'; ctx.fillRect(x-1, b.y-1, 2, 2);
+      ctx.lineWidth=1;
+    }
+  }
+
+  function drawSparks(){
+    for(const s of sparks){
+      ctx.globalAlpha = Math.max(0, s.life/16);
+      ctx.fillStyle=s.color; ctx.fillRect(s.x|0, s.y|0, 2, 2);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function drawHud(){
+    // coeurs
+    for(let i=0;i<player.maxhp;i++){
+      ctx.fillStyle = i<player.hp ? '#ff5b7a' : '#3a2030';
+      const hx=6+i*12, hy=6;
+      ctx.fillRect(hx+1,hy,3,3); ctx.fillRect(hx+5,hy,3,3);
+      ctx.fillRect(hx,hy+2,9,3); ctx.fillRect(hx+2,hy+5,5,2); ctx.fillRect(hx+3,hy+7,3,1);
+    }
+    // vaincus
+    ctx.fillStyle='#8fe3ff'; ctx.font='8px "Courier New"'; ctx.textAlign='right';
+    ctx.fillText('VAINCUS '+killCount, W-6, 12);
+    // progression
+    const prog = Math.min(1, player.x/GOAL_X);
+    ctx.fillStyle='#1b2740'; ctx.fillRect(W-70, 16, 62, 3);
+    ctx.fillStyle='#5ce0ff'; ctx.fillRect(W-70, 16, 62*prog, 3);
+
+    if (msgT>0){
+      ctx.globalAlpha=Math.min(1,msgT/30);
+      ctx.fillStyle='#ffe873'; ctx.font='bold 10px "Courier New"';
+      ctx.textAlign='center';
+      ctx.fillText(msg, W/2, 40);
+      ctx.globalAlpha=1;
+    }
+    ctx.textAlign='left';
+  }
+
+  function drawScreen(title, sub, sub2){
+    drawBg();
+    ctx.fillStyle='rgba(3,5,12,0.72)'; ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.fillStyle='#4dff8a'; ctx.font='bold 18px "Courier New"';
+    ctx.fillText(title, W/2, H/2-18);
+    ctx.fillStyle='#cfe3ff'; ctx.font='9px "Courier New"';
+    ctx.fillText(sub, W/2, H/2+4);
+    if (sub2){ ctx.fillStyle='#8fa4cc'; ctx.fillText(sub2, W/2, H/2+18); }
+    // petit sabre décoratif clignotant
+    if (Math.floor(state.time/20)%2===0){
+      ctx.strokeStyle='#4dff8a'; ctx.lineWidth=3; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(W/2-24, H/2+40); ctx.lineTo(W/2+24, H/2+40); ctx.stroke();
+      ctx.lineWidth=1;
+    }
+    ctx.textAlign='left';
+  }
+
+  // ---------- Boucle principale ----------
+  function loop(){
+    state.time++;
+    if (state.mode==='play'){
+      update();
+      drawBg(); drawPlatforms();
+      troopers.forEach(drawTrooper);
+      drawBolts(); drawPlayer(); drawSparks();
+      drawHud();
+    } else if (state.mode==='title'){
+      drawScreen('SABRE & ÉTOILES', 'Appuie sur ESPACE ou touche l\'écran',
+                 'Traverse la station · renvoie les tirs · atteins la porte');
+    } else if (state.mode==='win'){
+      drawScreen('PORTE ATTEINTE !', 'Troopers vaincus : '+killCount,
+                 'ESPACE / écran pour rejouer');
+    } else if (state.mode==='dead'){
+      drawScreen('TOMBÉ AU COMBAT', 'Troopers vaincus : '+killCount,
+                 'ESPACE / écran pour réessayer');
+    }
+    requestAnimationFrame(loop);
+  }
+
+  resetWorld();
+  loop();
+})();
+</script>
+</body>
+</html>

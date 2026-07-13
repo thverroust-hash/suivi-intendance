@@ -63,7 +63,7 @@
 <body>
 <div id="wrap">
   <canvas id="game" width="320" height="180"></canvas>
-  <div class="hint">← → déplacer &nbsp;·&nbsp; ESPACE / ↑ sauter &nbsp;·&nbsp; J / K frapper au sabre &nbsp;·&nbsp; frappe les tirs pour les renvoyer</div>
+  <div class="hint">← → déplacer &nbsp;·&nbsp; ESPACE / ↑ sauter &nbsp;·&nbsp; J / K frapper (enchaîne pour un combo ×3) &nbsp;·&nbsp; frappe en l'air = piqué &nbsp;·&nbsp; renvoie les tirs</div>
 </div>
 
 <div id="touch">
@@ -145,12 +145,21 @@
   // Paramètres du sabre
   const ATTACK_DUR = 15, ATTACK_CD = 10;
   const SABER_LEN = 22, SABER_REST = -1.15;
+  // Enchaînement au sol : chaque coup alterne le sens du geste (a0 → a1)
+  const COMBO = [
+    { a0:-2.15, a1: 0.70, dur:15 },   // fendant descendant
+    { a0: 1.00, a1:-1.50, dur:13 },   // remontant
+    { a0:-0.40, a1: 0.70, dur:20, power:true } // ample et puissant
+  ];
+  const COMBO_WINDOW = 16;   // frames pour enchaîner après un geste
+  const DIVE_DUR = 22;       // durée du coup plongeant
 
   function resetWorld(){
     player = {
       x:30, y:GROUND-26, w:12, h:22, vx:0, vy:0,
       onGround:false, face:1, hp:5, maxhp:5,
-      attack:0, attackCd:0, invuln:0, saberOn:true
+      attack:0, attackCd:0, attackDur:ATTACK_DUR, invuln:0, saberOn:true,
+      combo:0, comboWindow:0, comboShow:0, diving:false, prevAtk:false
     };
     troopers = [];
     const spots = [
@@ -203,23 +212,34 @@
     return px>=r.x && px<=r.x+r.w && py>=r.y && py<=r.y+r.h;
   }
 
-  // Angle de la lame : balaie un arc (haut-arrière → bas-avant) pendant la frappe
+  // Angle de la lame selon le coup en cours (combo au sol ou piqué en l'air)
   function saberAngle(){
-    if (player.attack<=0) return SABER_REST;
-    const t = 1 - player.attack/ATTACK_DUR;   // 0 → 1 le long du geste
-    const e = t*t*(3-2*t);                     // lissage (smoothstep)
-    return -2.15 + e*2.8;
+    const p = player;
+    if (p.attack<=0) return SABER_REST;
+    if (p.diving) return Math.PI/2;            // pointe vers le bas
+    const step = COMBO[p.combo] || COMBO[0];
+    const t = 1 - p.attack/step.dur;           // 0 → 1 le long du geste
+    const e = t*t*(3-2*t);                      // lissage (smoothstep)
+    return step.a0 + e*(step.a1-step.a0);
   }
   // Segment de lame en coordonnées monde
   function saberSeg(){
     const p = player;
+    if (p.diving){                              // lame verticale, centrée
+      const gx = p.x+p.w/2, gy = p.y+12, len = SABER_LEN+4;
+      return { gx, gy, tx:gx, ty:gy+len };
+    }
     const gx = p.face>0 ? p.x+p.w : p.x;
     const gy = p.y+10;
     const a = saberAngle(), d = p.face;
     return { gx, gy, tx: gx+Math.cos(a)*SABER_LEN*d, ty: gy+Math.sin(a)*SABER_LEN };
   }
-  // Fenêtre active : milieu du geste
-  function saberActive(){ return player.attack>2 && player.attack<ATTACK_DUR-2; }
+  // Fenêtre active : tout le piqué, ou le milieu du geste au sol
+  function saberActive(){
+    const p = player;
+    if (p.diving) return p.attack>0;
+    return p.attack>2 && p.attack < p.attackDur-2;
+  }
   // Points échantillonnés le long de la lame (pour la détection sur tout l'arc)
   function bladePts(seg){
     const pts=[];
@@ -265,12 +285,43 @@
       }
     }
 
-    // Attaque au sabre
+    // ---- Attaque au sabre : combo au sol, piqué en l'air ----
+    const atkEdge = keys.attack && !p.prevAtk;   // front montant (une frappe par appui)
+    p.prevAtk = keys.attack;
+
     if (p.attackCd>0) p.attackCd--;
-    if (keys.attack && p.attack<=0 && p.attackCd<=0){
-      p.attack = ATTACK_DUR; p.attackCd = ATTACK_DUR + ATTACK_CD;
+    // atterrissage pendant un piqué : onde de choc
+    if (p.diving && p.onGround){
+      p.diving=false; p.attack=0; p.attackCd=8;
+      kick(4); state.hitstop = Math.max(state.hitstop,3);
+      spark(p.x+p.w/2, p.y+p.h, '#bff7ff', 12);
     }
-    if (p.attack>0) p.attack--;
+    if (p.attack>0){
+      p.attack--;
+      if (p.attack===0){
+        if (p.diving){ p.diving=false; p.attackCd = Math.max(p.attackCd,6); } // piqué manqué
+        else p.comboWindow = COMBO_WINDOW;     // fenêtre d'enchaînement
+      }
+    }
+    if (p.comboWindow>0){ p.comboWindow--; if (p.comboWindow===0) p.combo=0; }
+    if (p.comboShow>0) p.comboShow--;
+
+    if (atkEdge && p.attack<=0 && p.attackCd<=0){
+      if (!p.onGround && !p.diving){
+        // coup plongeant
+        p.diving=true; p.attack=DIVE_DUR; p.attackDur=DIVE_DUR;
+        p.combo=0; p.comboWindow=0;
+        p.vy = Math.max(p.vy, 5.5); p.vx *= 0.4;
+      } else if (p.onGround){
+        // combo au sol : enchaîne si la fenêtre est ouverte
+        if (p.comboWindow>0 && p.combo<COMBO.length-1) p.combo++; else p.combo=0;
+        const step = COMBO[p.combo];
+        p.attack = step.dur; p.attackDur = step.dur;
+        p.attackCd = step.dur + (step.power ? ATTACK_CD+6 : 4);
+        p.comboWindow = 0;
+        if (p.combo>0) p.comboShow = 40;
+      }
+    }
     if (p.invuln>0) p.invuln--;
 
     const seg = saberSeg();
@@ -305,17 +356,28 @@
           spark(bx, t.y+8, '#ff4d4d', 3);
         }
       }
-      // frappé par le sabre : lame testée sur tout l'arc, un dégât par geste
+      // frappé par le sabre : lame testée sur tout l'arc, un impact par geste
       if (active && !t.hitLock &&
           bpts.some(pt=>pointInRect(pt.x,pt.y,{x:t.x,y:t.y,w:t.w,h:t.h}))){
-        t.hp--; t.hit=8; t.hitLock=true;
-        spark(t.x+t.w/2, t.y+t.h/2, '#8fe3ff', 10);
-        p.vx += -1.6*p.face;
-        kick(3); state.hitstop = Math.max(state.hitstop, 3);
-        if (t.hp<=0){ t.alive=false; spark(t.x+6,t.y+10,'#ffffff',16); kick(5); state.hitstop=6; addMsgKill(); }
+        t.hit=8; t.hitLock=true;
+        if (p.diving){
+          // piqué : rebond façon pogo + gros dégâts
+          t.hp-=2;
+          p.vy = -JUMP*0.72; p.diving=false; p.attack=0; p.attackCd=4;
+          spark(t.x+t.w/2, t.y, '#bff7ff', 12);
+          kick(4); state.hitstop = Math.max(state.hitstop,4);
+        } else {
+          const power = COMBO[p.combo].power;
+          t.hp -= power ? 2 : 1;
+          p.vx += (power ? -3 : -1.6)*p.face;
+          kick(power ? 5 : 3);
+          state.hitstop = Math.max(state.hitstop, power ? 5 : 3);
+          spark(t.x+t.w/2, t.y+t.h/2, '#8fe3ff', power ? 14 : 10);
+        }
+        if (t.hp<=0){ t.alive=false; spark(t.x+6,t.y+10,'#ffffff',16); kick(5); state.hitstop=Math.max(state.hitstop,6); addMsgKill(); }
       }
-      // contact direct : dégâts
-      if (t.alive && p.invuln<=0 && overlap(p,t)){
+      // contact direct : dégâts (sauf pendant un piqué, où l'on frappe d'en haut)
+      if (t.alive && !p.diving && p.invuln<=0 && overlap(p,t)){
         hurt(1); p.vx = 4*Math.sign(p.x-t.x || 1);
       }
     }
@@ -539,6 +601,15 @@
     ctx.fillStyle='#1b2740'; ctx.fillRect(W-70, 16, 62, 3);
     ctx.fillStyle='#5ce0ff'; ctx.fillRect(W-70, 16, 62*prog, 3);
 
+    // indicateur de combo au-dessus du héros
+    if (player.comboShow>0 && player.combo>0){
+      ctx.globalAlpha = Math.min(1, player.comboShow/12);
+      ctx.fillStyle = player.combo>=COMBO.length-1 ? '#ffd24d' : '#8fe3ff';
+      ctx.font='bold 9px "Courier New"'; ctx.textAlign='center';
+      ctx.fillText('COMBO ×'+(player.combo+1), px(player.x)+player.w/2, player.y-6);
+      ctx.globalAlpha=1;
+    }
+
     if (msgT>0){
       ctx.globalAlpha=Math.min(1,msgT/30);
       ctx.fillStyle='#ffe873'; ctx.font='bold 10px "Courier New"';
@@ -585,7 +656,7 @@
       drawHud();
     } else if (state.mode==='title'){
       drawScreen('SABRE & ÉTOILES', 'Appuie sur ESPACE ou touche l\'écran',
-                 'Traverse la station · renvoie les tirs · atteins la porte');
+                 'Enchaîne les combos · pique en l\'air · renvoie les tirs');
     } else if (state.mode==='win'){
       drawScreen('PORTE ATTEINTE !', 'Troopers vaincus : '+killCount,
                  'ESPACE / écran pour rejouer');

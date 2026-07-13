@@ -133,15 +133,44 @@
 
   // ---------- Son (WebAudio, synthétisé) ----------
   const Snd = (() => {
-    let ac=null, master=null, muted=false;
+    let ac=null, master=null, musicGain=null, muted=false;
     function ensure(){
       if (ac) return;
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
       ac = new AC();
       master = ac.createGain(); master.gain.value = 0.22; master.connect(ac.destination);
+      musicGain = ac.createGain(); musicGain.gain.value = 0.5; musicGain.connect(master);
     }
     function resume(){ ensure(); if (ac && ac.state==='suspended') ac.resume(); }
+    // Note de musique (douce, routée sous les effets)
+    function mtone(freq, dur, vol){
+      if (muted || !ac) return;
+      const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+      o.type='triangle'; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol, t+0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+      o.connect(g); g.connect(musicGain); o.start(t); o.stop(t+dur+0.02);
+    }
+    // Progression mineure (La m – Fa – Do – Sol), ambiance épique/sombre
+    const CH = [
+      { bass:110.00, arp:[440.00,523.25,659.25] },  // Am
+      { bass: 87.31, arp:[349.23,440.00,523.25] },  // F
+      { bass:130.81, arp:[523.25,659.25,783.99] },  // C
+      { bass: 98.00, arp:[392.00,493.88,587.33] }   // G
+    ];
+    let mFrame=0, mStep=0, tempo=13;
+    function tick(){
+      if (!ac || muted) return;
+      if (++mFrame < tempo) return;
+      mFrame = 0;
+      const ch = CH[Math.floor(mStep/4) % CH.length];
+      mtone(ch.arp[mStep%3], 0.22, 0.5);            // arpège
+      if (mStep%4===0) mtone(ch.bass, 0.7, 0.55);   // basse
+      if (mStep%8===2) mtone(ch.arp[2]*2, 0.14, 0.22); // accent aigu
+      mStep = (mStep+1) % 16;
+    }
     function tone(freq, dur, type, vol, slideTo){
       if (muted || !ac) return;
       const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
@@ -160,7 +189,7 @@
       s.connect(g); g.connect(master); s.start();
     }
     return {
-      resume, setMuted(m){ muted=m; }, isMuted(){ return muted; },
+      resume, tick, setMuted(m){ muted=m; }, isMuted(){ return muted; },
       swing(){ tone(330,0.12,'sawtooth',0.10,150); },
       hit(){ tone(190,0.10,'square',0.22,80); noise(0.05,0.10); },
       block(){ tone(520,0.12,'square',0.18,940); },
@@ -282,25 +311,12 @@
   const GRAV = 0.5, MOVE = 1.4, FRICTION = 0.78, JUMP = 8.2;
   const GROUND = H - 24;
 
-  // ---------- Niveau ----------
-  const LEVEL_W = 1600;
-  const platforms = [
-    {x:0,   y:GROUND, w:LEVEL_W, h:24},         // sol
-    {x:140, y:126, w:64, h:8},
-    {x:250, y:98,  w:56, h:8},
-    {x:420, y:120, w:70, h:8},
-    {x:560, y:96,  w:60, h:8},
-    {x:700, y:128, w:80, h:8},
-    {x:840, y:104, w:60, h:8},
-    {x:980, y:130, w:70, h:8},
-    {x:1120,y:100, w:64, h:8},
-    {x:1260,y:124, w:80, h:8},
-    {x:1400,y:100, w:70, h:8},
-  ];
-  const GOAL_X = LEVEL_W - 60;
+  // ---------- Niveaux (définis dynamiquement, voir LEVELS) ----------
+  let LEVEL_W, GOAL_X, platforms, theme;
 
   // ---------- État ----------
-  const state = { mode:'title', time:0, cam:0, best:0, shake:0, hitstop:0 };
+  const state = { mode:'title', time:0, cam:0, best:0, shake:0, hitstop:0,
+                  level:1, runTime:0, rank:'' };
   let player, troopers, bolts, sparks, saberTrail, pickups, msg, msgT;
 
   // Paramètres du sabre
@@ -334,49 +350,89 @@
       hp:2, alive:true, hit:0, hitLock:false, aim:0,
       shootCd:70+Math.random()*80, phase:Math.random()*6.28 });
   }
-  function addBoss(x){
+  function addBoss(x, hp){
+    hp = hp || 14;
     troopers.push({ type:'boss', x, y:GROUND-30, w:18, h:30, dir:-1,
-      hp:14, maxhp:14, alive:true, hit:0, hitLock:false,
+      hp, maxhp:hp, alive:true, hit:0, hitLock:false,
       state:'approach', stateT:70, atkCd:70, swingT:0, iframe:0, rage:0 });
   }
   function addPickup(x,y,type,grounded){
     pickups.push({ x, y, type, w:10, h:10, vy:0, grounded:!!grounded, phase:Math.random()*6.28, dead:false });
   }
 
-  function resetWorld(){
+  // ---------- Définition des niveaux ----------
+  const LEVELS = [
+    { // Niveau 1 — Station orbitale (bleu/violet)
+      name:'STATION ORBITALE', w:1600,
+      theme:{ sky0:'#0a0f1e', sky1:'#161033', star:'#3a4a78', starNear:'#88a0d8',
+              planet:'#2a1c4a', planet2:'#3b2a63',
+              ground:'#20283c', groundTop:'#2c3a58', groundLine:'#141a2a',
+              plat:'#3a4668', platTop:'#556492', platBot:'#222a40' },
+      plats:[ [140,126,64],[250,98,56],[420,120,70],[560,96,60],[700,128,80],
+              [840,104,60],[980,130,70],[1120,100,64],[1260,124,80],[1400,100,70] ],
+      spawn(){
+        [ [300,-1],[470,1],[640,-1],[920,-1],[1080,1],[1360,1] ].forEach(s=>addTrooper(s[0],s[1]));
+        addDroid(560,72); addDroid(1000,60); addDroid(1240,78);
+        addBoss(LEVEL_W-150, 14);
+        addPickup(255,88,'heal',true); addPickup(845,96,'fury',true); addPickup(1125,92,'heal',true);
+      }
+    },
+    { // Niveau 2 — Forge volcanique (rouge/braise)
+      name:'FORGE VOLCANIQUE', w:1780,
+      theme:{ sky0:'#1c0a12', sky1:'#3a121e', star:'#6a3446', starNear:'#d98a9a',
+              planet:'#48141e', planet2:'#6a1f2a',
+              ground:'#2c1620', groundTop:'#4a2432', groundLine:'#160a10',
+              plat:'#532530', platTop:'#8a4450', platBot:'#2a1218' },
+      plats:[ [130,110,54],[240,132,60],[360,96,50],[500,120,64],[640,92,54],
+              [780,124,70],[900,98,56],[1030,128,64],[1160,100,58],[1290,126,70],
+              [1420,98,60],[1540,120,64] ],
+      spawn(){
+        [ [280,-1],[430,1],[600,-1],[770,1],[980,-1],[1200,1],[1420,-1] ].forEach(s=>addTrooper(s[0],s[1]));
+        addDroid(500,66); addDroid(820,58); addDroid(1120,74); addDroid(1460,62);
+        addBoss(LEVEL_W-150, 18);
+        addPickup(365,84,'fury',true); addPickup(905,86,'heal',true);
+        addPickup(1295,112,'heal',true); addPickup(1545,108,'fury',true);
+      }
+    }
+  ];
+
+  function regenStars(){
+    starF = [];
+    for (let i=0;i<70;i++) starF.push({ x:Math.random()*LEVEL_W, y:Math.random()*H*0.6, s:1 });
+  }
+
+  function loadLevel(idx, keepHp){
+    const cfg = LEVELS[idx];
+    LEVEL_W = cfg.w; GOAL_X = LEVEL_W - 60; theme = cfg.theme;
+    platforms = [ {x:0, y:GROUND, w:LEVEL_W, h:24} ]      // sol
+      .concat(cfg.plats.map(p => ({ x:p[0], y:p[1], w:p[2], h:8 })));
+    const hp = keepHp ? Math.min(player.hp+1, 5) : 5;      // petit soin entre niveaux
     player = {
       x:30, y:GROUND-26, w:12, h:22, vx:0, vy:0,
-      onGround:false, face:1, hp:5, maxhp:5,
+      onGround:false, face:1, hp, maxhp:5,
       attack:0, attackCd:0, attackDur:ATTACK_DUR, invuln:0, saberOn:true,
       combo:0, comboWindow:0, comboShow:0, diving:false, prevAtk:false,
       rolling:0, airUsed:false, prevJump:false, fury:0
     };
-    troopers = [];
-    // Stormtroopers au sol
-    [ [300,-1],[470,1],[640,-1],[920,-1],[1080,1],[1360,1] ]
-      .forEach(s => addTrooper(s[0], s[1]));
-    // Droïdes volants
-    addDroid(560, 72); addDroid(1000, 60); addDroid(1240, 78);
-    // Boss gardien de la porte
-    addBoss(LEVEL_W - 150);
-
-    pickups = [];
-    // Bonus disséminés dans le niveau
-    addPickup(255, 88, 'heal', true);
-    addPickup(845, 96, 'fury', true);
-    addPickup(1125, 92, 'heal', true);
-
-    bolts = [];
-    sparks = [];
-    saberTrail = [];
+    troopers = []; pickups = []; bolts = []; sparks = []; saberTrail = [];
+    cfg.spawn();
+    regenStars();
     msg = ''; msgT = 0;
-    killCount = 0;
     state.shake = 0; state.hitstop = 0;
+  }
+
+  function nextLevel(){
+    state.level++;
+    loadLevel(state.level-1, true);
+    banner('NIVEAU '+state.level+' — '+LEVELS[state.level-1].name);
   }
 
   function start(){
     Snd.resume();
-    resetWorld();
+    state.level = 1;
+    state.runTime = 0; state.rank = '';
+    killCount = 0;
+    loadLevel(0, false);
     state.mode = 'play';
     state.time = 0;
     banner('QUE LA FORCE SOIT AVEC TOI');
@@ -813,20 +869,38 @@
     // Caméra
     state.cam = Math.max(0, Math.min(LEVEL_W-W, p.x - W/2 + 6));
 
+    // Chrono de la partie
+    state.runTime++;
+
     // Bannière
     if (msgT>0) msgT--;
 
-    // Victoire / défaite — la porte reste verrouillée tant que le boss vit
+    // Fin de niveau — la porte reste verrouillée tant que le boss vit
     if (p.x+p.w >= GOAL_X){
       if (!bossAlive()){
-        state.mode='win';
-        state.best = Math.max(state.best, aliveKilled());
-        Snd.win();
+        if (state.level < LEVELS.length){
+          nextLevel();                       // passe au niveau suivant
+        } else {
+          finishRun('win');                  // dernier niveau terminé
+        }
       } else if (msgT<=0){
         banner('VAINCS LE GARDE !');
       }
     }
-    if (p.hp<=0){ state.mode='dead'; Snd.lose(); }
+    if (p.hp<=0){ finishRun('dead'); }
+  }
+
+  // Calcule le rang et fige la fin de partie
+  function finishRun(mode){
+    // Score : ennemis vaincus, vie restante, rapidité
+    const secs = state.runTime/60;
+    let score = killCount*100 + player.hp*120;
+    score += Math.max(0, 400 - secs*2);         // bonus de rapidité
+    if (mode==='win') score += 500;
+    state.rank = score>1400 ? 'S' : score>1100 ? 'A' : score>800 ? 'B' : score>500 ? 'C' : 'D';
+    state.best = Math.max(state.best, killCount);
+    state.mode = mode;
+    if (mode==='win') Snd.win(); else Snd.lose();
   }
 
   function updatePickups(){
@@ -863,47 +937,49 @@
   // ---------- Rendu ----------
   let starL=[], starF=[];
   for(let i=0;i<40;i++) starL.push({x:Math.random()*W, y:Math.random()*H*0.7, s:Math.random()<.3?2:1});
-  for(let i=0;i<60;i++) starF.push({x:Math.random()*LEVEL_W, y:Math.random()*H*0.6, s:1});
+  // starF (étoiles proches) est régénéré par niveau dans regenStars()
 
   function px(x){ return Math.round(x - state.cam); }
 
   function drawBg(){
+    const th = theme || LEVELS[0].theme;
     // ciel dégradé
     const g = ctx.createLinearGradient(0,0,0,H);
-    g.addColorStop(0,'#0a0f1e'); g.addColorStop(1,'#161033');
+    g.addColorStop(0, th.sky0); g.addColorStop(1, th.sky1);
     ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
     // étoiles lointaines (parallaxe légère)
-    ctx.fillStyle='#3a4a78';
+    ctx.fillStyle=th.star;
     for(const s of starL){
       const x=(s.x - state.cam*0.2)%W; const xx=x<0?x+W:x;
       ctx.fillRect(xx|0, s.y|0, s.s, s.s);
     }
-    // grande planète
+    // grand astre
     const pxp = px(1180);
-    ctx.fillStyle='#2a1c4a'; ctx.beginPath();
+    ctx.fillStyle=th.planet; ctx.beginPath();
     ctx.arc(pxp, 44, 30, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle='#3b2a63'; ctx.beginPath();
+    ctx.fillStyle=th.planet2; ctx.beginPath();
     ctx.arc(pxp-8, 38, 22, 0, Math.PI*2); ctx.fill();
     // étoiles proches
-    ctx.fillStyle='#88a0d8';
+    ctx.fillStyle=th.starNear;
     for(const s of starF){
       const x=px(s.x); if(x>-2&&x<W+2) ctx.fillRect(x, s.y|0, s.s, s.s);
     }
   }
 
   function drawPlatforms(){
+    const th = theme || LEVELS[0].theme;
     for(const pl of platforms){
       const x=px(pl.x);
       if (x>W || x+pl.w<0) continue;
-      if (pl.h>=24){ // sol métallique
-        ctx.fillStyle='#20283c'; ctx.fillRect(x, pl.y, pl.w, pl.h);
-        ctx.fillStyle='#2c3a58'; ctx.fillRect(x, pl.y, pl.w, 3);
-        ctx.fillStyle='#141a2a';
+      if (pl.h>=24){ // sol
+        ctx.fillStyle=th.ground; ctx.fillRect(x, pl.y, pl.w, pl.h);
+        ctx.fillStyle=th.groundTop; ctx.fillRect(x, pl.y, pl.w, 3);
+        ctx.fillStyle=th.groundLine;
         for(let i=0;i<pl.w;i+=16) ctx.fillRect(x+i, pl.y+6, 1, pl.h-6);
       } else { // plateforme flottante
-        ctx.fillStyle='#3a4668'; ctx.fillRect(x, pl.y, pl.w, pl.h);
-        ctx.fillStyle='#556492'; ctx.fillRect(x, pl.y, pl.w, 2);
-        ctx.fillStyle='#222a40'; ctx.fillRect(x, pl.y+pl.h-1, pl.w, 1);
+        ctx.fillStyle=th.plat; ctx.fillRect(x, pl.y, pl.w, pl.h);
+        ctx.fillStyle=th.platTop; ctx.fillRect(x, pl.y, pl.w, 2);
+        ctx.fillStyle=th.platBot; ctx.fillRect(x, pl.y+pl.h-1, pl.w, 1);
       }
     }
     // porte de sortie
@@ -1221,9 +1297,48 @@
     ctx.textAlign='left';
   }
 
+  function fmtTime(frames){
+    const s = Math.floor(frames/60), m = Math.floor(s/60);
+    return (m>0 ? m+'m ' : '') + (s%60) + 's';
+  }
+  function drawEndScreen(win){
+    drawBg();
+    ctx.fillStyle='rgba(3,5,12,0.82)'; ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.fillStyle = win ? '#4dff8a' : '#ff6b6b';
+    ctx.font='bold 16px "Courier New"';
+    ctx.fillText(win ? 'MISSION ACCOMPLIE' : 'TOMBÉ AU COMBAT', W/2, 30);
+    // Rang
+    const rankCol = {S:'#ffd24d',A:'#8fe3ff',B:'#7dff9a',C:'#cfe3ff',D:'#8fa4cc'}[state.rank] || '#fff';
+    ctx.fillStyle=rankCol; ctx.font='bold 38px "Courier New"';
+    ctx.fillText(state.rank, W/2, 78);
+    ctx.fillStyle='#7f92b5'; ctx.font='7px "Courier New"';
+    ctx.fillText('RANG', W/2, 90);
+    // Statistiques
+    ctx.font='9px "Courier New"';
+    const rows = [
+      ['Niveau atteint', state.level + ' / ' + LEVELS.length],
+      ['Ennemis vaincus', ''+killCount],
+      ['Temps', fmtTime(state.runTime)]
+    ];
+    let yy = 112;
+    rows.forEach(r => {
+      ctx.textAlign='left';  ctx.fillStyle='#8fa4cc'; ctx.fillText(r[0], W/2-72, yy);
+      ctx.textAlign='right'; ctx.fillStyle='#e8f0ff'; ctx.fillText(r[1], W/2+72, yy);
+      yy += 13;
+    });
+    ctx.textAlign='center';
+    if (Math.floor(state.time/25)%2===0){
+      ctx.fillStyle='#9fb0d0'; ctx.font='8px "Courier New"';
+      ctx.fillText('ESPACE / écran pour rejouer', W/2, H-12);
+    }
+    ctx.textAlign='left';
+  }
+
   // ---------- Boucle principale ----------
   function loop(){
     state.time++;
+    Snd.tick();                       // musique de fond
     if (state.mode==='play'){
       if (state.hitstop>0) state.hitstop--; else update();
       drawBg();                        // fond plein écran (non secoué)
@@ -1240,18 +1355,16 @@
       drawHud();
     } else if (state.mode==='title'){
       drawScreen('SABRE & ÉTOILES', 'Appuie sur ESPACE ou touche l\'écran',
-                 'Ramasse les cristaux · terrasse le garde · ouvre la porte');
+                 '2 niveaux · cristaux · deux gardes à terrasser');
     } else if (state.mode==='win'){
-      drawScreen('PORTE ATTEINTE !', 'Troopers vaincus : '+killCount,
-                 'ESPACE / écran pour rejouer');
+      drawEndScreen(true);
     } else if (state.mode==='dead'){
-      drawScreen('TOMBÉ AU COMBAT', 'Troopers vaincus : '+killCount,
-                 'ESPACE / écran pour réessayer');
+      drawEndScreen(false);
     }
     requestAnimationFrame(loop);
   }
 
-  resetWorld();
+  loadLevel(0, false);
   loop();
 })();
 </script>

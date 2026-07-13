@@ -86,6 +86,17 @@
     position:absolute; bottom:8px; font-size:9px; letter-spacing:.5px;
     color:rgba(200,220,255,.7); font-family:'Courier New',monospace;
   }
+  /* Bouton son */
+  #mute{
+    position:fixed; top:10px; right:12px; z-index:5;
+    width:36px; height:36px; border-radius:8px;
+    background:rgba(20,30,50,.6); border:1px solid rgba(90,140,220,.4);
+    color:#dbe8ff; font-size:18px; line-height:1;
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer; -webkit-user-select:none; user-select:none;
+    padding-top:calc(env(safe-area-inset-top));
+  }
+  #mute:active{ background:rgba(50,80,140,.7); }
   @media (pointer:coarse){ #touch{ display:block; } }
   /* petits écrans : boutons un peu plus compacts */
   @media (pointer:coarse) and (max-width:360px){
@@ -95,9 +106,10 @@
 </style>
 </head>
 <body>
+<div id="mute" title="Son (M)">🔊</div>
 <div id="wrap">
   <canvas id="game" width="320" height="180"></canvas>
-  <div class="hint">← → déplacer &nbsp;·&nbsp; ESPACE / ↑ sauter (2ᵉ appui = roulade d'esquive) &nbsp;·&nbsp; J frapper (enchaîne = combo ×3) &nbsp;·&nbsp; frappe en l'air = piqué &nbsp;·&nbsp; renvoie les tirs</div>
+  <div class="hint">← → déplacer &nbsp;·&nbsp; ESPACE sauter (2ᵉ appui = roulade) &nbsp;·&nbsp; J frapper (combo ×3, aussi en saut) &nbsp;·&nbsp; ↓+J = piqué &nbsp;·&nbsp; M = son</div>
 </div>
 
 <div id="touch">
@@ -119,15 +131,71 @@
   const W = cv.width, H = cv.height;
   ctx.imageSmoothingEnabled = false;
 
+  // ---------- Son (WebAudio, synthétisé) ----------
+  const Snd = (() => {
+    let ac=null, master=null, muted=false;
+    function ensure(){
+      if (ac) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      ac = new AC();
+      master = ac.createGain(); master.gain.value = 0.22; master.connect(ac.destination);
+    }
+    function resume(){ ensure(); if (ac && ac.state==='suspended') ac.resume(); }
+    function tone(freq, dur, type, vol, slideTo){
+      if (muted || !ac) return;
+      const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+      o.type = type||'square'; o.frequency.setValueAtTime(freq, t);
+      if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20,slideTo), t+dur);
+      g.gain.setValueAtTime(vol||0.3, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t+dur);
+      o.connect(g); g.connect(master); o.start(t); o.stop(t+dur+0.02);
+    }
+    function noise(dur, vol){
+      if (muted || !ac) return;
+      const n = Math.floor(ac.sampleRate*dur), buf = ac.createBuffer(1,n,ac.sampleRate), d = buf.getChannelData(0);
+      for (let i=0;i<n;i++) d[i] = (Math.random()*2-1)*(1-i/n);
+      const s = ac.createBufferSource(); s.buffer = buf;
+      const g = ac.createGain(); g.gain.value = vol||0.2;
+      s.connect(g); g.connect(master); s.start();
+    }
+    return {
+      resume, setMuted(m){ muted=m; }, isMuted(){ return muted; },
+      swing(){ tone(330,0.12,'sawtooth',0.10,150); },
+      hit(){ tone(190,0.10,'square',0.22,80); noise(0.05,0.10); },
+      block(){ tone(520,0.12,'square',0.18,940); },
+      deflect(){ tone(720,0.14,'sawtooth',0.16,1300); },
+      shoot(fast){ tone(fast?920:700,0.09,'square',0.12, fast?220:320); },
+      hurt(){ tone(220,0.24,'sawtooth',0.28,70); noise(0.08,0.14); },
+      pickup(){ tone(620,0.09,'triangle',0.22,900); setTimeout(()=>tone(980,0.12,'triangle',0.2,1300),70); },
+      jump(){ tone(300,0.11,'square',0.12,620); },
+      roll(){ noise(0.12,0.12); tone(260,0.12,'sawtooth',0.08,420); },
+      burst(){ tone(120,0.3,'sawtooth',0.32,50); noise(0.24,0.22); },
+      win(){ [523,659,784,1047].forEach((f,i)=>setTimeout(()=>tone(f,0.18,'triangle',0.22),i*110)); },
+      lose(){ [400,300,200].forEach((f,i)=>setTimeout(()=>tone(f,0.26,'sawtooth',0.22,f*0.6),i*150)); }
+    };
+  })();
+  const muteBtn = document.getElementById('mute');
+  function toggleMute(){
+    Snd.resume(); Snd.setMuted(!Snd.isMuted());
+    if (muteBtn) muteBtn.textContent = Snd.isMuted() ? '🔇' : '🔊';
+  }
+  if (muteBtn){
+    muteBtn.addEventListener('click', toggleMute);
+    muteBtn.addEventListener('touchend', e => { e.preventDefault(); toggleMute(); }, {passive:false});
+  }
+
   // ---------- Entrées ----------
-  const keys = { left:false, right:false, jump:false, attack:false };
+  const keys = { left:false, right:false, jump:false, attack:false, down:false };
   const keyMap = {
     ArrowLeft:'left', KeyA:'left',
     ArrowRight:'right', KeyD:'right',
     ArrowUp:'jump', KeyW:'jump', Space:'jump',
+    ArrowDown:'down', KeyS:'down',
     KeyJ:'attack', KeyK:'attack', KeyX:'attack'
   };
   addEventListener('keydown', e => {
+    if (e.code === 'KeyM'){ toggleMute(); return; }
     const k = keyMap[e.code];
     if (k){ keys[k] = true; e.preventDefault();
       if (state.mode !== 'play') start(); }
@@ -157,13 +225,14 @@
   const knob = document.getElementById('knob');
   const padHint = pad.querySelector('.padhint');
   let padId = null, padOX = 0;
-  const DEAD = 7, KNOB_MAX = 40;
+  const DEAD = 7, KNOB_MAX = 40, DOWN_DEAD = 24;
+  let padOY = 0;
 
   function padStart(e){
     if (padId !== null) return;
     const t = e.changedTouches ? e.changedTouches[0] : e;
     padId = e.changedTouches ? t.identifier : 'mouse';
-    padOX = t.clientX;
+    padOX = t.clientX; padOY = t.clientY;
     const r = pad.getBoundingClientRect();
     stick.style.left = (t.clientX - r.left) + 'px';
     stick.style.top  = (t.clientY - r.top) + 'px';
@@ -186,14 +255,17 @@
     else if (dx < -KNOB_MAX){ padOX = t.clientX + KNOB_MAX; dx = -KNOB_MAX; }
     keys.left  = dx < -DEAD;
     keys.right = dx >  DEAD;
-    knob.style.transform = 'translate(' + dx + 'px,0)';
+    const dy = t.clientY - padOY;
+    keys.down = dy > DOWN_DEAD;   // pouce vers le bas → piqué
+    const ky = Math.max(0, Math.min(KNOB_MAX, dy));
+    knob.style.transform = 'translate(' + dx + 'px,' + ky + 'px)';
     e.preventDefault();
   }
   function padEnd(e){
     if (padId === null) return;
     if (e.changedTouches && ![...e.changedTouches].some(x => x.identifier === padId)) return;
     padId = null;
-    keys.left = false; keys.right = false;
+    keys.left = false; keys.right = false; keys.down = false;
     stick.classList.remove('on');
     if (padHint) padHint.style.opacity = '';
     if (e.cancelable) e.preventDefault();
@@ -264,8 +336,8 @@
   }
   function addBoss(x){
     troopers.push({ type:'boss', x, y:GROUND-30, w:18, h:30, dir:-1,
-      hp:11, maxhp:11, alive:true, hit:0, hitLock:false,
-      state:'approach', stateT:70, atkCd:80, swingT:0 });
+      hp:14, maxhp:14, alive:true, hit:0, hitLock:false,
+      state:'approach', stateT:70, atkCd:70, swingT:0, iframe:0, rage:0 });
   }
   function addPickup(x,y,type,grounded){
     pickups.push({ x, y, type, w:10, h:10, vy:0, grounded:!!grounded, phase:Math.random()*6.28, dead:false });
@@ -303,6 +375,7 @@
   }
 
   function start(){
+    Snd.resume();
     resetWorld();
     state.mode = 'play';
     state.time = 0;
@@ -391,7 +464,7 @@
         if (--t.aim === 0){
           const bx = t.x + (t.dir>0 ? t.w : 0);
           boltSpawn(bx, t.y+8, BOLT_SPEED*t.dir, 0, 'trooper');
-          spark(bx, t.y+8, '#ff4d4d', 4);
+          spark(bx, t.y+8, '#ff4d4d', 4); Snd.shoot(false);
           t.shootCd = t.shootGap;
         }
       } else {
@@ -420,7 +493,7 @@
           const bx = t.x+t.w/2, by = t.y+t.h;
           const ddx = player.x+player.w/2-bx, ddy = player.y+8-by, m = Math.hypot(ddx,ddy)||1;
           boltSpawn(bx, by, ddx/m*2.6, ddy/m*2.6, 'trooper');   // tir en piqué visé
-          spark(bx, by, '#ff4d4d', 4);
+          spark(bx, by, '#ff4d4d', 4); Snd.shoot(false);
           t.shootCd = 100+Math.random()*70;
         }
       } else if (--t.shootCd<=0){ t.aim = AIM_TIME; }
@@ -429,35 +502,84 @@
     if (t.x>LEVEL_W-32) t.x=LEVEL_W-32;
   }
 
+  function fireVolley(t){
+    const bx = t.x + (t.dir>0 ? t.w : 0), by = t.y+12;
+    const base = Math.atan2(player.y+8-by, player.x+player.w/2-bx);
+    for (let i=-1;i<=1;i++){
+      const a = base + i*0.24, sp = 3.7;          // plus rapides que les droïdes
+      boltSpawn(bx, by, Math.cos(a)*sp, Math.sin(a)*sp, 'trooper');
+    }
+    spark(bx, by, '#ff5a4d', 7); Snd.shoot(true);
+  }
+  function bossBurst(t){
+    t.state='burst'; t.stateT=22; t.atkCd=Math.max(t.atkCd,45);
+    spark(t.x+t.w/2, t.y+t.h/2, '#ffcaa0', 22); kick(6);
+    state.hitstop = Math.max(state.hitstop, 4);
+    Snd.burst();
+    const dx = player.x - t.x, dy = player.y - t.y;
+    if (Math.hypot(dx,dy) < 52){        // repousse fortement le joueur trop près
+      if (player.invuln<=0) hurt(1);
+      player.vx = 6.2*Math.sign(dx||1); player.vy = -5.2;
+      player.diving = false;
+    }
+  }
   function aiBoss(t){
     const dx = player.x - t.x, adx = Math.abs(dx);
     t.dir = Math.sign(dx) || t.dir;
+    if (t.iframe>0) t.iframe--;
     if (t.stateT>0) t.stateT--;
+    if (t.atkCd>0) t.atkCd--;
     switch(t.state){
       case 'approach':
-        if (adx>26) t.x += 0.75*Math.sign(dx);
-        if (t.atkCd>0) t.atkCd--;
-        if (t.atkCd<=0 && adx<42){ t.state='wind'; t.stateT=22; }        // amorce d'attaque
-        else if (t.stateT<=0){ t.state='guard'; t.stateT=70+Math.random()*45; }
+        if (adx>28) t.x += 1.15*Math.sign(dx);      // avance vite et sans relâche
+        if (t.atkCd<=0){
+          if (adx < 48){ t.state='wind'; t.stateT=16; }             // corps à corps
+          else if (adx < 210){ t.state='volwind'; t.stateT=24; }    // volée à distance
+        } else if (t.stateT<=0 && Math.random()<0.35){
+          t.state='guard'; t.stateT=45+Math.random()*30;
+        }
         break;
       case 'wind':
-        if (t.stateT<=0){ t.state='attack'; t.stateT=12; t.swingT=12; t.atkCd=95+Math.random()*40; }
+        if (t.stateT<=0){ t.state='attack'; t.stateT=12; t.swingT=12; t.atkCd=60+Math.random()*30; }
         break;
       case 'attack':
         if (t.swingT>0) t.swingT--;
         if (t.stateT<=0) t.state='approach';
         break;
+      case 'volwind':
+        if (t.stateT<=0){ fireVolley(t); t.state='volley'; t.stateT=10; t.atkCd=70+Math.random()*40; }
+        break;
+      case 'volley':
+        if (t.stateT<=0) t.state='approach';
+        break;
       case 'guard':
-        if (t.stateT<=0){ t.state='approach'; t.atkCd=Math.min(t.atkCd,25); }
+        if (t.stateT<=0){ t.state='approach'; t.atkCd=Math.min(t.atkCd,20); }
+        break;
+      case 'burst':
+        if (t.stateT<=0) t.state='approach';
         break;
     }
     if (t.x<20) t.x=20;
     if (t.x>LEVEL_W-24) t.x=LEVEL_W-24;
     // dégâts de la frappe du boss
     if (t.state==='attack' && t.swingT>5 && player.invuln<=0){
-      const box = t.dir>0 ? {x:t.x+t.w, y:t.y+4, w:22, h:t.h} : {x:t.x-22, y:t.y+4, w:22, h:t.h};
-      if (overlap(player, box)){ hurt(1); player.vx = 5*t.dir; player.vy = -3; }
+      const box = t.dir>0 ? {x:t.x+t.w, y:t.y+2, w:24, h:t.h} : {x:t.x-24, y:t.y+2, w:24, h:t.h};
+      if (overlap(player, box)){ hurt(1); player.vx = 5.2*t.dir; player.vy = -3; }
     }
+  }
+
+  // Dégâts à un ennemi (le boss a de brèves i-frames + une riposte anti-camping)
+  function damageEnemy(t, dmg){
+    if (t.type==='boss'){
+      if (t.iframe>0) return false;
+      t.hp -= dmg; t.hit=8; t.iframe=12;
+      t.rage = (t.rage||0)+1;
+      if (t.hp>0 && t.rage>=3){ t.rage=0; bossBurst(t); }
+    } else {
+      t.hp -= dmg; t.hit=8;
+    }
+    if (t.hp<=0) onEnemyDeath(t);
+    return true;
   }
 
   // Mort d'un ennemi + butin éventuel
@@ -490,6 +612,7 @@
       spark(player.x+player.w/2, player.y+8, '#5cc8ff', 16);
       kick(3);
     }
+    Snd.pickup();
   }
 
   // ---------- Boucle ----------
@@ -513,14 +636,14 @@
     p.prevJump = keys.jump;
     if (p.onGround) p.airUsed = false;
     if (jumpEdge){
-      if (p.onGround){ p.vy = -JUMP; p.onGround=false; }
+      if (p.onGround){ p.vy = -JUMP; p.onGround=false; Snd.jump(); }
       else if (!p.airUsed && !p.diving){
         p.airUsed = true; p.rolling = ROLL_DUR;
         const dir = keys.left ? -1 : keys.right ? 1 : p.face;
         p.face = dir;
         p.vx = ROLL_SPEED*dir; p.vy = -ROLL_JUMP;
         p.invuln = Math.max(p.invuln, ROLL_DUR+4);   // i-frames d'esquive
-        spark(p.x+p.w/2, p.y+p.h, '#bcd4ff', 8);
+        spark(p.x+p.w/2, p.y+p.h, '#bcd4ff', 8); Snd.roll();
       }
     }
     if (p.rolling>0) p.rolling--;
@@ -564,20 +687,22 @@
     if (p.comboShow>0) p.comboShow--;
 
     if (atkEdge && p.attack<=0 && p.attackCd<=0){
-      if (!p.onGround && !p.diving){
-        // coup plongeant
+      if (!p.onGround && keys.down && !p.diving){
+        // coup plongeant : attaque « bas » en l'air
         p.diving=true; p.attack=DIVE_DUR; p.attackDur=DIVE_DUR;
         p.combo=0; p.comboWindow=0; p.rolling=0;   // annule une roulade en cours
         p.vy = Math.max(p.vy, 5.5); p.vx *= 0.4;
-      } else if (p.onGround){
-        // combo au sol : enchaîne si la fenêtre est ouverte
+        Snd.swing();
+      } else {
+        // frappe : combo au sol OU slash aérien (touche les droïdes)
         if (p.comboWindow>0 && p.combo<COMBO.length-1) p.combo++; else p.combo=0;
         const step = COMBO[p.combo];
         p.attack = step.dur; p.attackDur = step.dur;
         p.attackCd = step.dur + (step.power ? ATTACK_CD+6 : 4);
         p.comboWindow = 0;
-        if (step.power) p.vx += p.face*1.8;   // petit élan avant sur le moulinet
+        if (step.power && p.onGround) p.vx += p.face*1.8;   // élan avant sur le moulinet
         if (p.combo>0) p.comboShow = 40;
+        Snd.swing();
       }
     }
     if (p.invuln>0) p.invuln--;
@@ -616,22 +741,23 @@
           t.hit = 4;
           spark(t.x + (t.dir>0?t.w:0), t.y+10, '#ffd24d', 8);
           kick(2); p.vx += 2.2*p.face;   // rebond : le coup est paré
+          Snd.block();
         } else if (p.diving){
           // piqué : rebond façon pogo + gros dégâts
-          t.hp -= 2 + (fury?1:0); t.hit=8;
+          const dealt = damageEnemy(t, 2 + (fury?1:0));
           p.vy = -JUMP*0.72; p.diving=false; p.attack=0; p.attackCd=4;
           spark(t.x+t.w/2, t.y, '#bff7ff', 12);
           kick(4); state.hitstop = Math.max(state.hitstop,4);
+          if (dealt) Snd.hit();
         } else {
-          t.hit=8;
           const power = COMBO[p.combo] && COMBO[p.combo].power;
-          t.hp -= (power ? 2 : 1) + (fury?1:0);
+          const dealt = damageEnemy(t, (power ? 2 : 1) + (fury?1:0));
           p.vx += (power ? -3 : -1.6)*p.face;
           kick(power ? 5 : 3);
           state.hitstop = Math.max(state.hitstop, power ? 5 : 3);
           spark(t.x+t.w/2, t.y+t.h/2, fury?'#5cc8ff':'#8fe3ff', power ? 14 : 10);
+          if (dealt) Snd.hit();
         }
-        if (t.hp<=0) onEnemyDeath(t);
       }
       // contact direct : dégâts (sauf pendant un piqué ou une roulade)
       if (t.alive && !p.diving && p.rolling<=0 && p.invuln<=0 && overlap(p,t)){
@@ -655,7 +781,7 @@
           b.vx = ddx/m*sp; b.vy = ddy/m*sp;
         } else { b.vx = sp*p.face; b.vy = (Math.random()-0.5)*1.2; }
         spark(b.x,b.y, fury?'#bfeaff':'#bff7ff', 10);
-        kick(2); state.hitstop = Math.max(state.hitstop, 2);
+        kick(2); state.hitstop = Math.max(state.hitstop, 2); Snd.deflect();
       }
       // touche le joueur
       if (b.from==='trooper' && p.invuln<=0 && p.rolling<=0 &&
@@ -666,9 +792,7 @@
       if (b.from==='player'){
         for (const t of troopers){
           if (t.alive && b.x>t.x && b.x<t.x+t.w && b.y>t.y && b.y<t.y+t.h){
-            b.life=0; t.hp-=2; t.hit=8;
-            spark(t.x+6,t.y+10,'#8fe3ff',10); kick(3);
-            if (t.hp<=0) onEnemyDeath(t);
+            if (damageEnemy(t, 2)){ b.life=0; spark(t.x+6,t.y+10,'#8fe3ff',10); kick(3); Snd.hit(); }
           }
         }
       }
@@ -697,11 +821,12 @@
       if (!bossAlive()){
         state.mode='win';
         state.best = Math.max(state.best, aliveKilled());
+        Snd.win();
       } else if (msgT<=0){
         banner('VAINCS LE GARDE !');
       }
     }
-    if (p.hp<=0){ state.mode='dead'; }
+    if (p.hp<=0){ state.mode='dead'; Snd.lose(); }
   }
 
   function updatePickups(){
@@ -731,6 +856,7 @@
     const p=player;
     p.hp-=n; p.invuln=60;
     spark(p.x+p.w/2, p.y+8, '#ff6b6b', 8);
+    kick(3); Snd.hurt();
     if (p.hp<=0) p.hp=0;
   }
 
@@ -877,11 +1003,12 @@
     const gx = t.dir>0 ? x+t.w : x;
     const gy = y+12;
     let a;
-    if (t.state==='guard')       a = t.dir>0 ? -1.15 : -1.15;      // levé en garde
-    else if (t.state==='wind')   a = -2.2;                          // armé au-dessus
-    else if (t.state==='attack') a = 0.5;                           // abattu devant
-    else                          a = -0.7;                          // au repos
-    const len=20, d=t.dir;
+    if (t.state==='guard')                          a = -1.15;   // levé en garde
+    else if (t.state==='wind'||t.state==='volwind') a = -2.2;    // armé au-dessus
+    else if (t.state==='attack')                    a = 0.5;     // abattu devant
+    else if (t.state==='burst')                     a = 0;       // horizontal (onde)
+    else                                             a = -0.7;    // au repos
+    const len = t.state==='burst' ? 26 : 20, d=t.dir;
     const ex = gx + Math.cos(a)*len*d, ey = gy + Math.sin(a)*len;
     ctx.fillStyle='#c9ccd4'; ctx.fillRect(gx-1, gy-1, 3, 4);       // manche
     ctx.lineCap='round';
@@ -893,11 +1020,26 @@
     ctx.strokeStyle='#ffd9d9'; ctx.lineWidth=1.4;
     ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(ex,ey); ctx.stroke();
     ctx.lineWidth=1;
+    // télégraphe de volée : charge rouge au poing
+    if (t.state==='volwind'){
+      const c = 1 - t.stateT/24, r = 2+c*4;
+      ctx.globalAlpha=0.4+0.5*c; ctx.fillStyle='#ff5a4d';
+      ctx.beginPath(); ctx.arc(gx, gy, r, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha=1;
+    }
     // bouclier de garde
     if (t.state==='guard'){
       ctx.globalAlpha=0.25+0.15*Math.sin(state.time*0.3);
       ctx.strokeStyle='#ffd24d'; ctx.lineWidth=2;
       ctx.beginPath(); ctx.arc(x+t.w/2, y+t.h/2, 15, 0, Math.PI*2); ctx.stroke();
+      ctx.globalAlpha=1; ctx.lineWidth=1;
+    }
+    // onde de choc du burst
+    if (t.state==='burst'){
+      const c = 1 - t.stateT/22;
+      ctx.globalAlpha = Math.max(0, 0.5*(1-c));
+      ctx.strokeStyle='#ffcaa0'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(x+t.w/2, y+t.h/2, 8+c*40, 0, Math.PI*2); ctx.stroke();
       ctx.globalAlpha=1; ctx.lineWidth=1;
     }
     // barre de vie du boss

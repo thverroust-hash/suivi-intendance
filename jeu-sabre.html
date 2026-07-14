@@ -297,6 +297,20 @@
     return got;
   }
 
+  // ---------- Modificateurs de défi (cumulables, multiplient les cristaux) ----------
+  const MODS = [
+    { id:'fragile', name:'FRAGILE', mult:2,    desc:'Un seul cœur' },
+    { id:'puriste', name:'PURISTE', mult:1.5,  desc:'Sabre seul : ni pouvoir ni lame boomerang' },
+    { id:'elite',   name:'ÉLITE',   mult:1.75, desc:'Ennemis renforcés, visée et tirs plus rapides' }
+  ];
+  function modMult(){
+    let m = 1;
+    for (const md of MODS) if (menu.mods[md.id]) m *= md.mult;
+    return m;
+  }
+  function fmtMult(m){ return '×'+(Math.round(m*100)/100); }
+  function aimT(){ return state.mods && state.mods.elite ? 17 : AIM_TIME; }
+
   // ---------- Entrées ----------
   const keys = { left:false, right:false, jump:false, attack:false, down:false, power:false, throw:false };
   const keyMap = {
@@ -405,8 +419,9 @@
 
   // ---------- État ----------
   const state = { mode:'title', time:0, cam:0, shake:0, hitstop:0,
-                  level:1, runTime:0, rank:'', arena:false, wave:0 };
-  const menu = { char:'kael', sel:0 };
+                  level:1, runTime:0, rank:'', arena:false, wave:0,
+                  mods:null, modMult:1, banked:0 };
+  const menu = { char:'kael', sel:0, mods:{} };
   let player, troopers, bolts, sparks, saberTrail, pickups, rings, thrown, props, msg, msgT;
   let killCount = 0, runCrystals = 0, waveT = 0;
   let uiZones = [];
@@ -434,23 +449,25 @@
   const THROW_COST = 15;     // coût de la lame boomerang
 
   // ---------- Fabrique d'ennemis ----------
+  function eliteBonus(){ return state.mods && state.mods.elite ? 1 : 0; }
   function addTrooper(x, dir, hp){
     troopers.push({ type:'trooper', x, y:GROUND-22, w:12, h:22, dir,
-      hp:hp||2, alive:true, hit:0, hitLock:false, stun:0, aim:0,
+      hp:(hp||2)+eliteBonus(), alive:true, hit:0, hitLock:false, stun:0, aim:0,
       shootCd:60+Math.random()*60, shootGap:70+Math.random()*70,
       prefDist:58+Math.random()*45, spd:0.3+Math.random()*0.35 });
   }
   function addDroid(x,y){
     troopers.push({ type:'droid', x, y, baseY:y, w:14, h:11, dir:-1,
-      hp:2, alive:true, hit:0, hitLock:false, stun:0, aim:0,
+      hp:2+eliteBonus(), alive:true, hit:0, hitLock:false, stun:0, aim:0,
       shootCd:70+Math.random()*80, phase:Math.random()*6.28 });
   }
   function addAcolyte(x){
     troopers.push({ type:'acolyte', x, y:GROUND-20, w:11, h:20, dir:-1,
-      hp:3, alive:true, hit:0, hitLock:false, stun:0,
+      hp:3+eliteBonus(), alive:true, hit:0, hitLock:false, stun:0,
       st:'patrol', stT:0, lungeCd:0 });
   }
   function addBoss(x, hp, tier){
+    if (eliteBonus()) hp = Math.round(hp*1.25);
     troopers.push({ type:'boss', x, y:GROUND-30, w:18, h:30, dir:-1, tier:tier||1,
       hp, maxhp:hp, alive:true, hit:0, hitLock:false, stun:0,
       state:'approach', stateT:70, atkCd:70, swingT:0, iframe:0, rage:0 });
@@ -550,7 +567,7 @@
     platforms = [ {x:0, y:GROUND, w:LEVEL_W, h:24} ]      // sol
       .concat(cfg.plats.map(p => ({ x:p[0], y:p[1], w:p[2], h:8 })));
     const ch = CHARS[menu.char] || CHARS.kael;
-    const maxhp = ch.hp + save.upHp;
+    const maxhp = (state.mods && state.mods.fragile) ? 1 : ch.hp + save.upHp;
     const energyMax = 100 + save.upForce*25;
     const hp = keepHp && player ? Math.min(player.hp+1, maxhp) : maxhp;   // petit soin entre niveaux
     const energy = keepHp && player ? player.energy : energyMax;
@@ -580,6 +597,8 @@
   function startRun(charId){
     Snd.resume();
     menu.char = charId || menu.char;
+    state.mods = Object.assign({}, menu.mods);
+    state.modMult = modMult();
     state.arena = false; state.wave = 0;
     state.level = 1;
     state.runTime = 0; state.rank = '';
@@ -602,6 +621,8 @@
   function startArena(charId){
     Snd.resume();
     menu.char = charId || menu.char;
+    state.mods = Object.assign({}, menu.mods);
+    state.modMult = modMult();
     state.arena = true; state.wave = 1;
     state.level = 1;
     state.runTime = 0; state.rank = '';
@@ -646,6 +667,7 @@
 
   // ---------- Combat ----------
   function boltSpawn(x,y,vx,vy,from){
+    if (from==='trooper' && state.mods && state.mods.elite){ vx*=1.2; vy*=1.2; }
     bolts.push({x,y,vx,vy,from,r:2,life:180});
   }
   function spark(x,y,color,n=6){
@@ -732,7 +754,7 @@
       } else {
         if (adx < t.prefDist-12)      t.x -= t.spd*Math.sign(dx);   // recule si trop près
         else if (adx > t.prefDist+12) t.x += t.spd*Math.sign(dx);   // avance si trop loin
-        if (--t.shootCd<=0 && adx>40) t.aim = AIM_TIME;             // pas de tir collé
+        if (--t.shootCd<=0 && adx>40) t.aim = aimT();               // pas de tir collé
       }
     } else {
       t.x += 0.4*t.dir;
@@ -758,7 +780,7 @@
           spark(bx, by, '#ff4d4d', 4); Snd.shoot(false);
           t.shootCd = 100+Math.random()*70;
         }
-      } else if (--t.shootCd<=0){ t.aim = AIM_TIME; }
+      } else if (--t.shootCd<=0){ t.aim = aimT(); }
     }
     if (t.x<20) t.x=20;
     if (t.x>LEVEL_W-32) t.x=LEVEL_W-32;
@@ -975,6 +997,7 @@
   // ---------- Pouvoirs de Force ----------
   function usePower(){
     const p = player, pw = p.charDef.power;
+    if (state.mods && state.mods.puriste){ banner('PURISTE — SABRE SEUL'); Snd.err(); return; }
     if (p.energy < pw.cost){ Snd.err(); return; }
     if (pw.id==='quake' && !p.onGround){ Snd.err(); return; }
     p.energy -= pw.cost;
@@ -1027,6 +1050,7 @@
 
   function throwSaber(){
     const p = player;
+    if (state.mods && state.mods.puriste){ banner('PURISTE — SABRE SEUL'); Snd.err(); return; }
     if (thrown || p.energy < THROW_COST){ Snd.err(); return; }
     p.energy -= THROW_COST;
     thrown = { x:p.x+p.w/2, y:p.y+8, vx:4.2*p.face, dist:0, phase:'out', spin:0 };
@@ -1403,7 +1427,8 @@
       if (player.hp>=5) save.tankWin = true;
       if (!save.chars.nyra){ save.chars.nyra = true; state.nyraNew = true; }
     }
-    save.crystals += runCrystals;
+    state.banked = Math.round(runCrystals * (state.modMult||1));
+    save.crystals += state.banked;
     save.runs++;
     state.newAch = checkAch();
     persist();
@@ -1862,12 +1887,16 @@
       ctx.fillRect(hx+1,hy,3,3); ctx.fillRect(hx+5,hy,3,3);
       ctx.fillRect(hx,hy+2,9,3); ctx.fillRect(hx+2,hy+5,5,2); ctx.fillRect(hx+3,hy+7,3,1);
     }
-    // jauge d'énergie de Force (encoche = coût du pouvoir)
+    // jauge d'énergie de Force (encoche = coût du pouvoir ; grisée en Puriste)
     const ew=54, ex=6, ey=17;
+    const pur = state.mods && state.mods.puriste;
     ctx.fillStyle='#101d33'; ctx.fillRect(ex, ey, ew, 4);
-    ctx.fillStyle='#5ca8ff'; ctx.fillRect(ex, ey, ew*p.energy/p.energyMax, 4);
-    const notch = ew*p.charDef.power.cost/p.energyMax;
-    ctx.fillStyle='#cfe3ff'; ctx.fillRect(ex+notch|0, ey-1, 1, 6);
+    ctx.fillStyle = pur ? '#3a4453' : '#5ca8ff';
+    ctx.fillRect(ex, ey, ew*p.energy/p.energyMax, 4);
+    if (!pur){
+      const notch = ew*p.charDef.power.cost/p.energyMax;
+      ctx.fillStyle='#cfe3ff'; ctx.fillRect(ex+notch|0, ey-1, 1, 6);
+    }
     // jauge de Fureur
     if (p.fury>0){
       ctx.fillStyle='#123049'; ctx.fillRect(ex, ey+7, ew, 3);
@@ -1886,7 +1915,7 @@
       ctx.fillStyle='#5ce0ff'; ctx.fillRect(W-70, 16, 62*prog, 3);
     }
     ctx.fillStyle='#ffd24d';
-    ctx.fillText('◆ '+runCrystals, W-6, 30);
+    ctx.fillText('◆ '+runCrystals + (state.modMult>1 ? '  '+fmtMult(state.modMult) : ''), W-6, 30);
 
     // indicateur de combo au-dessus du héros
     if (p.comboShow>0 && p.combo>0){
@@ -2026,8 +2055,29 @@
     ctx.fillStyle='#7dff9a';
     ctx.fillText('MISSION ▶', 216+48, by+13);
 
-    ctx.fillStyle='#546a94'; ctx.font='7px "Courier New"';
-    ctx.fillText('← → naviguer · ENTRÉE valider · ÉCHAP retour', W/2, 168);
+    // puces des modificateurs de défi
+    ctx.font='6px "Courier New"'; ctx.textAlign='left';
+    ctx.fillStyle='#7f92b5'; ctx.fillText('DÉFIS', 5, 162);
+    MODS.forEach((md, i) => {
+      const mx = 34+i*94, my = 153, mw = 90, mh = 14;
+      zone(mx, my, mw, mh, () => { menu.mods[md.id] = !menu.mods[md.id]; Snd.uiMove(); });
+      const on = !!menu.mods[md.id];
+      ctx.fillStyle = on ? 'rgba(64,50,14,0.95)' : 'rgba(13,21,38,0.9)';
+      ctx.fillRect(mx, my, mw, mh);
+      ctx.strokeStyle = on ? '#ffd24d' : '#26324e';
+      ctx.strokeRect(mx+0.5, my+0.5, mw-1, mh-1);
+      ctx.textAlign='center';
+      ctx.fillStyle = on ? '#ffd24d' : '#7f92b5';
+      ctx.font='bold 7px "Courier New"';
+      ctx.fillText(md.name+' '+fmtMult(md.mult), mx+mw/2, my+10);
+      ctx.textAlign='left'; ctx.font='6px "Courier New"';
+    });
+    // description des défis actifs (ou aide)
+    ctx.textAlign='center'; ctx.fillStyle='#546a94'; ctx.font='6px "Courier New"';
+    const actives = MODS.filter(md=>menu.mods[md.id]);
+    ctx.fillText(actives.length
+      ? actives.map(md=>md.desc).join(' · ')+'  →  cristaux '+fmtMult(modMult())
+      : 'Défis cumulables : multiplient les cristaux ◆ gagnés', W/2, 175);
     ctx.textAlign='left';
 
     // surbrillance clavier
@@ -2179,7 +2229,7 @@
                   : ['Niveau atteint', state.level + ' / ' + LEVELS.length],
       ['Ennemis vaincus', ''+killCount],
       ['Temps', fmtTime(state.runTime)],
-      ['Cristaux récoltés', '+'+runCrystals+' ◆']
+      ['Cristaux récoltés', '+'+state.banked+' ◆'+(state.modMult>1 ? ' ('+fmtMult(state.modMult)+')' : '')]
     ];
     // nouveaux déblocages de cette partie
     if (state.nyraNew || (state.newAch && state.newAch.length)){

@@ -213,6 +213,7 @@
       jump(){ tone(300,0.11,'square',0.12,620); },
       roll(){ noise(0.12,0.12); tone(260,0.12,'sawtooth',0.08,420); },
       burst(){ tone(120,0.3,'sawtooth',0.32,50); noise(0.24,0.22); },
+      lamp(){ tone(880,0.07,'square',0.12,300); noise(0.04,0.08); },
       power(){ tone(240,0.22,'sawtooth',0.22,880); noise(0.1,0.1); },
       throwS(){ tone(560,0.16,'sawtooth',0.14,240); },
       uiMove(){ tone(480,0.05,'square',0.08,520); },
@@ -235,7 +236,7 @@
 
   // ---------- Sauvegarde persistante (méta-progression) ----------
   const SAVE_KEY = 'sabre-etoiles-save';
-  let save = { crystals:0, upHp:0, upDmg:0, upForce:0, chars:{kael:true}, bestRank:'', runs:0 };
+  let save = { crystals:0, upHp:0, upDmg:0, upForce:0, chars:{kael:true}, bestRank:'', bestWave:0, runs:0 };
   try{
     const s = localStorage.getItem(SAVE_KEY);
     if (s){ const d = JSON.parse(s); save = Object.assign(save, d); save.chars = Object.assign({kael:true}, d.chars||{}); }
@@ -380,10 +381,10 @@
 
   // ---------- État ----------
   const state = { mode:'title', time:0, cam:0, shake:0, hitstop:0,
-                  level:1, runTime:0, rank:'' };
-  const menu = { char: save.chars.vex||save.chars.torr ? 'kael' : 'kael', sel:0 };
-  let player, troopers, bolts, sparks, saberTrail, pickups, rings, thrown, msg, msgT;
-  let killCount = 0, runCrystals = 0;
+                  level:1, runTime:0, rank:'', arena:false, wave:0 };
+  const menu = { char:'kael', sel:0 };
+  let player, troopers, bolts, sparks, saberTrail, pickups, rings, thrown, props, msg, msgT;
+  let killCount = 0, runCrystals = 0, waveT = 0;
   let uiZones = [];
 
   // Paramètres du sabre
@@ -438,6 +439,21 @@
       vx:(Math.random()-0.5)*2, vy:-1-Math.random()*1.5,
       grounded:false, phase:Math.random()*6.28, dead:false });
   }
+  // Pylônes lumineux destructibles (les « chandeliers » du jeu)
+  function addProp(x){
+    props.push({ x, y:GROUND-15, w:6, h:15, alive:true, ph:Math.random()*6.28 });
+  }
+  function breakProp(pr){
+    pr.alive = false;
+    spark(pr.x+3, pr.y+4, '#ffe873', 10);
+    Snd.lamp();
+    const r = Math.random();
+    if (r<0.5) addShard(pr.x, pr.y);
+    else if (r<0.75){ addShard(pr.x-2, pr.y); addShard(pr.x+3, pr.y); }
+    else if (r<0.85) addPickup(pr.x-2, pr.y, 'heal');
+    else if (r<0.92) addPickup(pr.x-2, pr.y, 'fury');
+    else addShard(pr.x, pr.y);
+  }
 
   // ---------- Définition des niveaux ----------
   const LEVELS = [
@@ -454,6 +470,7 @@
         addDroid(560,72); addDroid(1000,60); addDroid(1240,78);
         addBoss(LEVEL_W-150, 14, 1);
         addPickup(255,88,'heal',true); addPickup(845,96,'fury',true); addPickup(1125,92,'heal',true);
+        [180,380,520,760,900,1060,1200,1440].forEach(addProp);
       }
     },
     { // Niveau 2 — Forge volcanique (rouge/braise)
@@ -472,6 +489,7 @@
         addBoss(LEVEL_W-150, 18, 2);
         addPickup(365,84,'fury',true); addPickup(905,86,'heal',true);
         addPickup(1295,112,'heal',true); addPickup(1545,108,'fury',true);
+        [200,330,560,700,860,1100,1240,1480,1620].forEach(addProp);
       }
     },
     { // Niveau 3 — Temple perdu (jade/jungle)
@@ -491,6 +509,7 @@
         addBoss(LEVEL_W-150, 22, 3);
         addPickup(385,110,'heal',true); addPickup(805,84,'fury',true);
         addPickup(1225,114,'heal',true); addPickup(1645,84,'fury',true);
+        [220,420,580,760,940,1160,1300,1540,1820].forEach(addProp);
       }
     }
   ];
@@ -502,8 +521,7 @@
     for (let i=0;i<70;i++) starF.push({ x:Math.random()*LEVEL_W, y:Math.random()*H*0.6, s:1 });
   }
 
-  function loadLevel(idx, keepHp){
-    const cfg = LEVELS[idx];
+  function loadLevel(cfg, keepHp){
     LEVEL_W = cfg.w; GOAL_X = LEVEL_W - 60; theme = cfg.theme;
     platforms = [ {x:0, y:GROUND, w:LEVEL_W, h:24} ]      // sol
       .concat(cfg.plats.map(p => ({ x:p[0], y:p[1], w:p[2], h:8 })));
@@ -522,7 +540,7 @@
       energy, energyMax, dashT:0, prevPow:false, prevThr:false
     };
     troopers = []; pickups = []; bolts = []; sparks = []; saberTrail = [];
-    rings = []; thrown = null;
+    rings = []; thrown = null; props = [];
     cfg.spawn();
     regenStars();
     msg = ''; msgT = 0;
@@ -531,21 +549,64 @@
 
   function nextLevel(){
     state.level++;
-    loadLevel(state.level-1, true);
+    loadLevel(LEVELS[state.level-1], true);
     banner('NIVEAU '+state.level+' — '+LEVELS[state.level-1].name);
   }
 
   function startRun(charId){
     Snd.resume();
     menu.char = charId || menu.char;
+    state.arena = false; state.wave = 0;
     state.level = 1;
     state.runTime = 0; state.rank = '';
     killCount = 0; runCrystals = 0;
     player = null;
-    loadLevel(0, false);
+    loadLevel(LEVELS[0], false);
     state.mode = 'play';
     state.time = 0;
     banner(CHARS[menu.char].name+' — QUE LA FORCE SOIT AVEC TOI');
+  }
+
+  // ---------- Mode Arène (vagues infinies) ----------
+  const ARENA_CFG = {
+    name:'ARÈNE', w:640,
+    theme: LEVELS[0].theme,
+    plats: [ [120,120,70],[275,94,86],[440,122,70] ],
+    spawn(){}
+  };
+  function startArena(charId){
+    Snd.resume();
+    menu.char = charId || menu.char;
+    state.arena = true; state.wave = 1;
+    state.level = 1;
+    state.runTime = 0; state.rank = '';
+    killCount = 0; runCrystals = 0; waveT = 0;
+    player = null;
+    loadLevel(ARENA_CFG, false);
+    spawnWave(1);
+    state.mode = 'play';
+    state.time = 0;
+    banner('ARÈNE — VAGUE 1');
+  }
+  function spawnWave(n){
+    theme = LEVELS[(n-1)%LEVELS.length].theme;   // le décor change à chaque vague
+    troopers = []; bolts = [];
+    props = props.filter(pr => pr.alive);
+    const rx = () => {
+      for (let tries=0; tries<20; tries++){
+        const x = 40 + Math.random()*(LEVEL_W-100);
+        if (Math.abs(x - player.x) > 70) return x;
+      }
+      return 60;
+    };
+    const thp = 2 + Math.floor(n/4);
+    const tc = Math.min(2 + Math.floor(n*0.8), 8);
+    for (let i=0;i<tc;i++) addTrooper(rx(), Math.random()<0.5?-1:1, thp);
+    if (n>=2){ const dc = Math.min(1+Math.floor((n-2)/2), 4); for (let i=0;i<dc;i++) addDroid(rx(), 50+Math.random()*30); }
+    if (n>=3){ const ac = Math.min(Math.floor((n-1)/2), 4); for (let i=0;i<ac;i++) addAcolyte(rx()); }
+    if (n%5===0) addBoss(rx(), 10+3*n, Math.min(3, Math.ceil(n/5)));
+    addProp(rx()); addProp(rx());
+    for (const t of troopers) spark(t.x+t.w/2, t.y+t.h/2, '#8fa4cc', 6);
   }
 
   function banner(t){ msg = t; msgT = 90; }
@@ -702,8 +763,8 @@
   function fireVolley(t){
     const bx = t.x + (t.dir>0 ? t.w : 0), by = t.y+12;
     const base = Math.atan2(player.y+8-by, player.x+player.w/2-bx);
-    const n = 2 + t.tier;                          // 3 / 4 / 5 tirs selon le palier
-    const sp = 3.5 + 0.25*t.tier;
+    const n = 2 + t.tier + (t.enraged?1:0);        // 3 / 4 / 5 (+1 enragé) tirs
+    const sp = 3.5 + 0.25*t.tier + (t.enraged?0.4:0);
     for (let i=0;i<n;i++){
       const a = base + (i-(n-1)/2)*0.22;
       boltSpawn(bx, by, Math.cos(a)*sp, Math.sin(a)*sp, 'trooper');
@@ -729,16 +790,33 @@
     if (t.iframe>0) t.iframe--;
     if (t.stateT>0) t.stateT--;
     if (t.atkCd>0) t.atkCd--;
-    const spd = 0.95 + 0.2*t.tier;
+    const spd = (0.95 + 0.2*t.tier) * (t.enraged ? 1.35 : 1);
     switch(t.state){
       case 'approach':
         if (adx>28) t.x += spd*Math.sign(dx);      // avance vite et sans relâche
+        // enragé : peut se téléporter dans le dos du joueur
+        if (t.enraged && t.atkCd<=0 && adx>60 && adx<230 && Math.random()<0.04){
+          t.state='tpout'; t.stateT=16; t.iframe=Math.max(t.iframe,30);
+          spark(t.x+t.w/2, t.y+t.h/2, '#c77dff', 10); Snd.throwS();
+          break;
+        }
         if (t.atkCd<=0){
           if (adx < 48){ t.state='wind'; t.stateT=16; }             // corps à corps
           else if (adx < 220){ t.state='volwind'; t.stateT=24; }    // volée à distance
         } else if (t.stateT<=0 && Math.random()<0.35){
           t.state='guard'; t.stateT=45+Math.random()*30;
         }
+        break;
+      case 'tpout':   // disparition télégraphiée…
+        if (t.stateT<=0){
+          const bx = player.x + (player.face>0 ? -34 : 34);   // …et surgit dans ton dos
+          t.x = Math.max(24, Math.min(LEVEL_W-40, bx));
+          spark(t.x+t.w/2, t.y+t.h/2, '#c77dff', 14);
+          t.state='tpin'; t.stateT=8;
+        }
+        break;
+      case 'tpin':
+        if (t.stateT<=0){ t.state='wind'; t.stateT=10; }
         break;
       case 'wind':
         if (t.stateT<=0){ t.state='attack'; t.stateT=12; t.swingT=12; t.atkCd=60+Math.random()*30; }
@@ -774,6 +852,15 @@
     if (t.type==='boss'){
       if (t.iframe>0) return false;
       t.hp -= dmg; t.hit=8; t.iframe=12;
+      // Phase 2 du boss final : rage sombre sous 50 % de vie
+      if (!t.enraged && t.tier>=3 && t.hp>0 && t.hp<=t.maxhp/2){
+        t.enraged = true; t.iframe = 30; t.rage = 0;
+        banner('LE GARDE LIBÈRE SA COLÈRE !');
+        ring(t.x+t.w/2, t.y+t.h/2, 60, '#c77dff');
+        kick(6); Snd.power();
+        t.state='approach'; t.stateT=0; t.atkCd=20;
+        return true;
+      }
       t.rage = (t.rage||0)+1;
       if (t.hp>0 && t.rage>=3){ t.rage=0; bossBurst(t); }
     } else {
@@ -929,6 +1016,10 @@
       if (b.from==='trooper' && Math.hypot(b.x-s.x, b.y-s.y) < 8){
         deflectBolt(b); spark(b.x,b.y,'#bff7ff',5); Snd.deflect();
       }
+    }
+    // et brise les pylônes sur son passage
+    for (const pr of props){
+      if (pr.alive && Math.abs(s.x-(pr.x+3))<8 && Math.abs(s.y-(pr.y+7))<12) breakProp(pr);
     }
   }
 
@@ -1124,6 +1215,17 @@
       }
     }
 
+    // Pylônes destructibles : sabre, piqué ou ruée les brisent
+    for (const pr of props){
+      if (!pr.alive) continue;
+      const box = {x:pr.x, y:pr.y, w:pr.w, h:pr.h};
+      if ((active && bpts.some(pt=>pointInRect(pt.x,pt.y,box))) ||
+          (p.diving && overlap(p,box)) ||
+          (p.dashT>0 && overlap(p,box))){
+        breakProp(pr);
+      }
+    }
+
     // Bolts
     const pcx = p.x+p.w/2, pcy = p.y+p.h/2;
     for (const b of bolts){
@@ -1142,12 +1244,15 @@
           b.x>p.x && b.x<p.x+p.w && b.y>p.y && b.y<p.y+p.h){
         b.life=0; hurt(1);
       }
-      // bolt renvoyé touche un ennemi
+      // bolt renvoyé touche un ennemi (ou brise un pylône au passage)
       if (b.from==='player'){
         for (const t of troopers){
           if (t.alive && b.x>t.x && b.x<t.x+t.w && b.y>t.y && b.y<t.y+t.h){
             if (damageEnemy(t, 2)){ b.life=0; spark(t.x+6,t.y+10,'#8fe3ff',10); kick(3); Snd.hit(); }
           }
+        }
+        for (const pr of props){
+          if (pr.alive && b.x>pr.x-1 && b.x<pr.x+pr.w+1 && b.y>pr.y && b.y<pr.y+pr.h) breakProp(pr);
         }
       }
       if (b.x<0||b.x>LEVEL_W || b.y<-8 || b.y>H+8) b.life=0;
@@ -1177,16 +1282,32 @@
     // Bannière
     if (msgT>0) msgT--;
 
-    // Fin de niveau — la porte reste verrouillée tant que le boss vit
-    if (p.x+p.w >= GOAL_X){
-      if (!bossAlive()){
-        if (state.level < LEVELS.length){
-          nextLevel();                       // passe au niveau suivant
-        } else {
-          finishRun('win');                  // dernier niveau terminé
+    if (state.arena){
+      // Arène : vague suivante quand tout est nettoyé
+      if (!troopers.some(t=>t.alive)){
+        if (waveT<=0){
+          waveT = 110;
+          banner('VAGUE '+state.wave+' NETTOYÉE !');
+          addPickup(LEVEL_W/2-5, GROUND-40, 'heal');
+          Snd.pickup();
+        } else if (--waveT===0){
+          state.wave++;
+          spawnWave(state.wave);
+          banner('VAGUE '+state.wave);
         }
-      } else if (msgT<=0){
-        banner('VAINCS LE GARDE !');
+      }
+    } else {
+      // Fin de niveau — la porte reste verrouillée tant que le boss vit
+      if (p.x+p.w >= GOAL_X){
+        if (!bossAlive()){
+          if (state.level < LEVELS.length){
+            nextLevel();                       // passe au niveau suivant
+          } else {
+            finishRun('win');                  // dernier niveau terminé
+          }
+        } else if (msgT<=0){
+          banner('VAINCS LE GARDE !');
+        }
       }
     }
     if (p.hp<=0){ finishRun('dead'); }
@@ -1195,14 +1316,20 @@
   // Calcule le rang, met en banque les cristaux et fige la fin de partie
   const RANKS = 'DCBAS';
   function finishRun(mode){
-    const secs = state.runTime/60;
-    let score = killCount*100 + player.hp*120;
-    score += Math.max(0, 500 - secs*2);         // bonus de rapidité
-    if (mode==='win') score += 600;
-    state.rank = score>1800 ? 'S' : score>1400 ? 'A' : score>1000 ? 'B' : score>600 ? 'C' : 'D';
+    if (state.arena){
+      const w = state.wave;
+      state.rank = w>=12 ? 'S' : w>=9 ? 'A' : w>=6 ? 'B' : w>=4 ? 'C' : 'D';
+      save.bestWave = Math.max(save.bestWave||0, w);
+    } else {
+      const secs = state.runTime/60;
+      let score = killCount*100 + player.hp*120;
+      score += Math.max(0, 500 - secs*2);         // bonus de rapidité
+      if (mode==='win') score += 600;
+      state.rank = score>1800 ? 'S' : score>1400 ? 'A' : score>1000 ? 'B' : score>600 ? 'C' : 'D';
+      if (RANKS.indexOf(state.rank) > RANKS.indexOf(save.bestRank)) save.bestRank = state.rank;
+    }
     save.crystals += runCrystals;
     save.runs++;
-    if (RANKS.indexOf(state.rank) > RANKS.indexOf(save.bestRank)) save.bestRank = state.rank;
     persist();
     state.mode = mode;
     if (mode==='win') Snd.win(); else Snd.lose();
@@ -1230,12 +1357,12 @@
       else if (code==='Enter'||code==='Space'||code==='KeyJ'){ const z=uiZones[menu.sel]; if(z) z.cb(); }
       else if (code==='Escape'){
         state.mode = state.mode==='shop' ? 'select' : 'title';
-        menu.sel = state.mode==='select' ? 4 : 0;
+        menu.sel = state.mode==='select' ? 5 : 0;
         Snd.uiMove();
       }
     }
   }
-  function gotoSelect(){ state.mode='select'; menu.sel=4; Snd.uiSel(); }
+  function gotoSelect(){ state.mode='select'; menu.sel=5; Snd.uiSel(); }
 
   function tryBuyChar(id){
     const ch = CHARS[id];
@@ -1294,7 +1421,8 @@
         ctx.fillStyle=th.platBot; ctx.fillRect(x, pl.y+pl.h-1, pl.w, 1);
       }
     }
-    // porte de sortie
+    // porte de sortie (pas de sortie en arène)
+    if (state.arena) return;
     const gx=px(GOAL_X);
     if (gx<W+40){
       const locked = bossAlive();
@@ -1308,6 +1436,25 @@
       if (locked){
         ctx.fillStyle='#e0483c';
         ctx.fillRect(gx+10, GROUND-24, 6, 5); ctx.fillRect(gx+11, GROUND-27, 4, 3);
+      }
+    }
+  }
+
+  function drawProps(){
+    const th = theme || LEVELS[0].theme;
+    for (const pr of props){
+      const x = px(pr.x);
+      if (x<-10||x>W+10) continue;
+      ctx.fillStyle='#1a2130';
+      ctx.fillRect(x+2, pr.y+4, 2, pr.h-4);          // mât
+      ctx.fillRect(x, pr.y+pr.h-2, 6, 2);            // socle
+      if (pr.alive){
+        pr.ph += 0.15;
+        const gl = 0.6+0.3*Math.sin(pr.ph);
+        ctx.globalAlpha = 0.35*gl; ctx.fillStyle = th.starNear;
+        ctx.beginPath(); ctx.arc(x+3, pr.y+2, 5, 0, Math.PI*2); ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle='#ffe8a0'; ctx.fillRect(x+1, pr.y, 4, 4);
       }
     }
   }
@@ -1395,6 +1542,15 @@
     const x=px(t.x), y=t.y;
     if (x<-40||x>W+40) return;
     const flash = t.hit>0 && (t.hit%4<2);
+    if (t.state==='tpout') ctx.globalAlpha = Math.max(0.15, t.stateT/16);
+    else if (t.state==='tpin') ctx.globalAlpha = 1 - t.stateT/16;
+    if (t.enraged){   // aura sombre de phase 2
+      const ga = ctx.globalAlpha;
+      ctx.globalAlpha = ga * (0.2 + 0.12*Math.sin(state.time*0.35));
+      ctx.strokeStyle='#c77dff'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(x+t.w/2, y+t.h/2, 17, 0, Math.PI*2); ctx.stroke();
+      ctx.globalAlpha = ga; ctx.lineWidth=1;
+    }
     ctx.fillStyle = flash ? '#7a3b3b' : '#241a2e';
     ctx.fillRect(x, y+8, t.w, t.h-8);
     ctx.fillStyle = flash ? '#8a4a4a' : '#151019';
@@ -1441,7 +1597,9 @@
     // barre de vie du boss
     const bw=t.w+8, bx=x-4, by=y-7;
     ctx.fillStyle='#3a1420'; ctx.fillRect(bx, by, bw, 3);
-    ctx.fillStyle='#ff4d6a'; ctx.fillRect(bx, by, bw*Math.max(0,t.hp)/t.maxhp, 3);
+    ctx.fillStyle = t.enraged ? '#c77dff' : '#ff4d6a';
+    ctx.fillRect(bx, by, bw*Math.max(0,t.hp)/t.maxhp, 3);
+    ctx.globalAlpha = 1;
   }
 
   function drawEnemy(t){
@@ -1614,12 +1772,18 @@
       ctx.fillStyle='#123049'; ctx.fillRect(ex, ey+7, ew, 3);
       ctx.fillStyle='#5cc8ff'; ctx.fillRect(ex, ey+7, ew*p.fury/FURY_TIME, 3);
     }
-    // vaincus + progression + cristaux
+    // vaincus + progression (ou vague) + cristaux
     ctx.fillStyle='#8fe3ff'; ctx.font='8px "Courier New"'; ctx.textAlign='right';
     ctx.fillText('VAINCUS '+killCount, W-6, 12);
-    const prog = Math.min(1, p.x/GOAL_X);
-    ctx.fillStyle='#1b2740'; ctx.fillRect(W-70, 16, 62, 3);
-    ctx.fillStyle='#5ce0ff'; ctx.fillRect(W-70, 16, 62*prog, 3);
+    if (state.arena){
+      ctx.fillStyle='#ff9d5c'; ctx.font='bold 8px "Courier New"';
+      ctx.fillText('VAGUE '+state.wave, W-6, 21);
+      ctx.font='8px "Courier New"';
+    } else {
+      const prog = Math.min(1, p.x/GOAL_X);
+      ctx.fillStyle='#1b2740'; ctx.fillRect(W-70, 16, 62, 3);
+      ctx.fillStyle='#5ce0ff'; ctx.fillRect(W-70, 16, 62*prog, 3);
+    }
     ctx.fillStyle='#ffd24d';
     ctx.fillText('◆ '+runCrystals, W-6, 30);
 
@@ -1679,6 +1843,10 @@
       ctx.fillStyle='#8fe3ff';
       ctx.fillText('MEILLEUR RANG : '+save.bestRank, W/2+38, 132);
     }
+    if (save.bestWave>0){
+      ctx.fillStyle='#ff9d5c';
+      ctx.fillText('ARÈNE — RECORD : VAGUE '+save.bestWave, W/2, 144);
+    }
     ctx.fillStyle='#546a94'; ctx.font='7px "Courier New"';
     ctx.fillText('3 héros · pouvoirs de Force · améliorations permanentes', W/2, 158);
     ctx.textAlign='left';
@@ -1727,19 +1895,25 @@
       }
     });
 
-    // boutons bas
+    // boutons bas : atelier / arène / mission
     const by = 130, bh = 20;
-    zone(32, by, 116, bh, () => { state.mode='shop'; menu.sel=0; Snd.uiSel(); });
-    ctx.fillStyle='rgba(20,32,56,0.95)'; ctx.fillRect(32, by, 116, bh);
-    ctx.strokeStyle='#3a4d78'; ctx.strokeRect(32.5, by+0.5, 115, bh-1);
+    zone(8, by, 96, bh, () => { state.mode='shop'; menu.sel=0; Snd.uiSel(); });
+    ctx.fillStyle='rgba(20,32,56,0.95)'; ctx.fillRect(8, by, 96, bh);
+    ctx.strokeStyle='#3a4d78'; ctx.strokeRect(8.5, by+0.5, 95, bh-1);
     ctx.fillStyle='#ffd24d'; ctx.font='bold 8px "Courier New"'; ctx.textAlign='center';
-    ctx.fillText('ATELIER ◆', 32+58, by+13);
+    ctx.fillText('ATELIER ◆', 8+48, by+13);
 
-    zone(172, by, 116, bh, () => startRun(menu.char));
-    ctx.fillStyle='rgba(20,50,36,0.95)'; ctx.fillRect(172, by, 116, bh);
-    ctx.strokeStyle='#3a7a58'; ctx.strokeRect(172.5, by+0.5, 115, bh-1);
+    zone(112, by, 96, bh, () => startArena(menu.char));
+    ctx.fillStyle='rgba(50,32,20,0.95)'; ctx.fillRect(112, by, 96, bh);
+    ctx.strokeStyle='#7a583a'; ctx.strokeRect(112.5, by+0.5, 95, bh-1);
+    ctx.fillStyle='#ff9d5c';
+    ctx.fillText('ARÈNE ∞', 112+48, by+13);
+
+    zone(216, by, 96, bh, () => startRun(menu.char));
+    ctx.fillStyle='rgba(20,50,36,0.95)'; ctx.fillRect(216, by, 96, bh);
+    ctx.strokeStyle='#3a7a58'; ctx.strokeRect(216.5, by+0.5, 95, bh-1);
     ctx.fillStyle='#7dff9a';
-    ctx.fillText('COMMENCER · '+CHARS[menu.char].name, 172+58, by+13);
+    ctx.fillText('MISSION ▶', 216+48, by+13);
 
     ctx.fillStyle='#546a94'; ctx.font='7px "Courier New"';
     ctx.fillText('← → naviguer · ENTRÉE valider · ÉCHAP retour', W/2, 168);
@@ -1794,7 +1968,7 @@
     });
 
     const by = 132, bh = 20;
-    zone(W/2-58, by, 116, bh, () => { state.mode='select'; menu.sel=4; Snd.uiMove(); });
+    zone(W/2-58, by, 116, bh, () => { state.mode='select'; menu.sel=5; Snd.uiMove(); });
     ctx.fillStyle='rgba(20,32,56,0.95)'; ctx.fillRect(W/2-58, by, 116, bh);
     ctx.strokeStyle='#3a4d78'; ctx.strokeRect(W/2-57.5, by+0.5, 115, bh-1);
     ctx.fillStyle='#cfe3ff'; ctx.font='bold 8px "Courier New"'; ctx.textAlign='center';
@@ -1833,7 +2007,8 @@
     ctx.font='9px "Courier New"';
     const rows = [
       ['Héros', CHARS[menu.char].name],
-      ['Niveau atteint', state.level + ' / ' + LEVELS.length],
+      state.arena ? ['Vague atteinte', ''+state.wave]
+                  : ['Niveau atteint', state.level + ' / ' + LEVELS.length],
       ['Ennemis vaincus', ''+killCount],
       ['Temps', fmtTime(state.runTime)],
       ['Cristaux récoltés', '+'+runCrystals+' ◆']
@@ -1868,6 +2043,7 @@
         ctx.translate((Math.random()-0.5)*state.shake, (Math.random()-0.5)*state.shake);
       }
       drawPlatforms();
+      drawProps();
       drawPickups();
       troopers.forEach(drawEnemy);
       drawBolts(); drawThrown(); drawRings(); drawPlayer(); drawSparks();
@@ -1888,7 +2064,7 @@
     requestAnimationFrame(loop);
   }
 
-  loadLevel(0, false);   // décor pour l'écran titre
+  loadLevel(LEVELS[0], false);   // décor pour l'écran titre
   loop();
 })();
 </script>

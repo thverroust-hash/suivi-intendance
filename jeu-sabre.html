@@ -452,11 +452,13 @@
 
   // ---------- Fabrique d'ennemis ----------
   function eliteBonus(){ return state.mods && state.mods.elite ? 1 : 0; }
-  function addTrooper(x, dir, hp){
-    troopers.push({ type:'trooper', x, y:GROUND-22, w:12, h:22, dir,
+  function addTrooper(x, dir, hp, y, range){
+    const perch = y != null;
+    troopers.push({ type:'trooper', x, y:(perch?y:GROUND-22), w:12, h:22, dir,
       hp:(hp||2)+eliteBonus(), alive:true, hit:0, hitLock:false, stun:0, aim:0,
       shootCd:60+Math.random()*60, shootGap:70+Math.random()*70,
-      prefDist:58+Math.random()*45, spd:0.3+Math.random()*0.35 });
+      prefDist:58+Math.random()*45, spd:0.3+Math.random()*0.35,
+      minx: perch ? x-(range||36) : 20, maxx: perch ? x+(range||36) : LEVEL_W-32 });
   }
   function addDroid(x,y){
     troopers.push({ type:'droid', x, y, baseY:y, w:14, h:11, dir:-1,
@@ -508,57 +510,60 @@
 
   // ---------- Définition des niveaux ----------
   const LEVELS = [
-    { // Niveau 1 — Station orbitale (bleu/violet), long et plat
-      name:'STATION ORBITALE', w:2600,
+    { // Niveau 1 — Station orbitale (bleu/violet), VERTICAL : grande arche
+      name:'STATION ORBITALE', w:2600, h:320,   // GROUND = 296
       theme:{ sky0:'#0a0f1e', sky1:'#161033', star:'#3a4a78', starNear:'#88a0d8',
               planet:'#2a1c4a', planet2:'#3b2a63',
               ground:'#20283c', groundTop:'#2c3a58', groundLine:'#141a2a',
               plat:'#3a4668', platTop:'#556492', platBot:'#222a40' },
-      plats:[ [140,126,64],[250,98,56],[420,120,70],[560,96,60],[700,128,80],
-              [840,104,60],[980,130,70],[1120,100,64],[1260,124,80],[1400,100,70],
-              [1560,120,70],[1720,96,60],[1880,124,70],[2040,100,64],[2200,122,72],
-              [2360,98,60] ],
+      // montée en zigzag (pas de 28 px) jusqu'à un sommet, puis descente
+      plats:[ [140,268,58],[250,240,58],[360,212,58],[470,184,58],[580,156,58],
+              [690,128,58],[800,100,58],[915,78,66],
+              [1035,100,58],[1150,128,58],[1265,156,58],[1380,184,58],[1495,212,58],
+              [1610,240,58],[1725,268,64],
+              [1880,236,58],[2000,204,58],[2120,236,58],[2260,268,64],[2410,282,70] ],
       spawn(){
-        [ [300,-1],[470,1],[640,-1],[920,-1],[1080,1],[1360,1],
-          [1620,-1],[1840,1],[2080,-1],[2300,1] ].forEach(s=>addTrooper(s[0],s[1]));
-        addDroid(560,72); addDroid(1000,60); addDroid(1240,78);
-        addDroid(1660,64); addDroid(2020,58); addDroid(2260,72);
-        addAcolyte(1500); addAcolyte(2140);
+        [ [200,-1],[700,1],[1000,-1],[1500,1],[2000,-1],[2350,1] ].forEach(s=>addTrooper(s[0],s[1]));
+        addTrooper(930,-1,2,56,26);   // sentinelle perchée au sommet
+        addTrooper(1725,1,2,246,28);
+        addDroid(580,120); addDroid(915,48); addDroid(1265,118);
+        addDroid(1610,150); addDroid(2000,150); addDroid(2260,120);
+        addAcolyte(1050); addAcolyte(2150);
         addBoss(LEVEL_W-150, 14, 1);
-        addPickup(255,88,'heal',true); addPickup(845,96,'fury',true);
-        addPickup(1125,92,'heal',true); addPickup(1880,112,'heal',true);
-        addPickup(2200,110,'fury',true);
-        [180,380,520,760,900,1060,1200,1440,1620,1780,1980,2160,2340].forEach(addProp);
-        addSaw(700, GROUND-40, 46, 0, 0.03);
-        addSaw(1820, GROUND-46, 0, 34, 0.04);
-        addSpikes(1150, 90); addSpikes(1960, 100);
+        addPickup(940,60,'fury',true);    addPickup(470,164,'heal',true);
+        addPickup(1380,164,'heal',true);  addPickup(2000,184,'fury',true);
+        addPickup(255,268,'heal',true);
+        [180,520,900,1200,1620,1980,2340].forEach(addProp);
+        addSaw(690,102,0,40,0.03);  addSaw(1380,150,50,0,0.03);
+        addSpikes(430,36); addSpikes(1200,38); addSpikes(1900,36); addSpikes(2180,36);
       }
     },
-    { // Niveau 2 — Forge volcanique (rouge/braise), pièges nombreux
-      name:'FORGE VOLCANIQUE', w:2800,
+    { // Niveau 2 — Forge volcanique (rouge/braise), VERTICAL et plus haut
+      name:'FORGE VOLCANIQUE', w:2800, h:360,   // GROUND = 336
       theme:{ sky0:'#1c0a12', sky1:'#3a121e', star:'#6a3446', starNear:'#d98a9a',
               planet:'#48141e', planet2:'#6a1f2a',
               ground:'#2c1620', groundTop:'#4a2432', groundLine:'#160a10',
               plat:'#532530', platTop:'#8a4450', platBot:'#2a1218' },
-      plats:[ [130,110,54],[240,132,60],[360,96,50],[500,120,64],[640,92,54],
-              [780,124,70],[900,98,56],[1030,128,64],[1160,100,58],[1290,126,70],
-              [1420,98,60],[1540,120,64],[1700,96,56],[1850,124,66],[2000,98,58],
-              [2150,126,68],[2300,100,60],[2460,124,66],[2600,98,60] ],
+      plats:[ [130,308,58],[245,280,58],[360,252,58],[475,224,58],[590,196,58],
+              [705,168,58],[820,140,58],[935,112,58],[1050,86,64],
+              [1170,112,58],[1285,140,58],[1400,168,58],[1515,196,58],[1630,224,58],
+              [1745,252,58],[1860,280,58],[1975,308,64],
+              [2110,276,58],[2225,244,58],[2340,276,58],[2460,308,64],[2600,320,70] ],
       spawn(){
-        [ [280,-1],[430,1],[600,-1],[980,-1],[1200,1],[1420,-1],
-          [1720,1],[1980,-1],[2260,1],[2500,-1] ].forEach(s=>addTrooper(s[0],s[1]));
-        addDroid(500,66); addDroid(820,58); addDroid(1120,74); addDroid(1460,62);
-        addDroid(1880,60); addDroid(2260,70); addDroid(2560,58);
-        addAcolyte(730); addAcolyte(1310); addAcolyte(2040); addAcolyte(2440);
+        [ [280,-1],[600,1],[1200,-1],[1620,1],[1975,-1],[2400,1] ].forEach(s=>addTrooper(s[0],s[1]));
+        addTrooper(1050,-1,2,64,28);   // sentinelle au sommet
+        addTrooper(1975,1,2,286,28);
+        addDroid(475,180); addDroid(935,80); addDroid(1285,110);
+        addDroid(1745,220); addDroid(2225,210); addDroid(1050,56);
+        addAcolyte(730); addAcolyte(1620); addAcolyte(2440);
         addBoss(LEVEL_W-150, 18, 2);
-        addPickup(365,84,'fury',true); addPickup(905,86,'heal',true);
-        addPickup(1295,112,'heal',true); addPickup(1850,112,'heal',true);
-        addPickup(2300,88,'fury',true);
-        [200,330,560,700,860,1100,1240,1480,1620,1820,2020,2220,2440,2620].forEach(addProp);
-        addSaw(640, GROUND-42, 0, 40, 0.04);
-        addSaw(1400, GROUND-38, 52, 0, 0.03);
-        addSaw(2150, GROUND-44, 0, 38, 0.045);
-        addSpikes(760, 110); addSpikes(1560, 120); addSpikes(2360, 120);
+        addPickup(1050,64,'fury',true);   addPickup(590,204,'heal',true);
+        addPickup(1400,148,'heal',true);  addPickup(2225,224,'fury',true);
+        addPickup(280,308,'heal',true);
+        [200,700,1100,1500,1975,2440,2620].forEach(addProp);
+        addSaw(705,168,0,44,0.04);   addSaw(1050,58,54,0,0.03);
+        addSaw(1515,196,0,40,0.045); addSaw(2110,248,48,0,0.03);
+        addSpikes(330,38); addSpikes(900,40); addSpikes(1500,38); addSpikes(2050,36); addSpikes(2300,38);
       }
     },
     { // Niveau 3 — Temple perdu (jade), VERTICAL : monte puis redescend
@@ -802,8 +807,8 @@
     } else {
       t.x += 0.4*t.dir;
     }
-    if (t.x<20){ t.x=20; t.dir=1; }
-    if (t.x>LEVEL_W-32){ t.x=LEVEL_W-32; t.dir=-1; }
+    if (t.x<t.minx){ t.x=t.minx; t.dir=1; }
+    if (t.x>t.maxx){ t.x=t.maxx; t.dir=-1; }
   }
 
   function aiDroid(t){

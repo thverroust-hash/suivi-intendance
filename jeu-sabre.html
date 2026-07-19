@@ -625,7 +625,8 @@
       combo:0, comboWindow:0, comboShow:0, diving:false, prevAtk:false,
       rolling:0, airUsed:false, prevJump:false, fury:0,
       charDef:ch, col:ch.col, body:ch.body, spd:ch.spd,
-      energy, energyMax, dashT:0, stormT:0, prevPow:false, prevThr:false
+      energy, energyMax, dashT:0, stormT:0, prevPow:false, prevThr:false,
+      onOneWay:false, standPlat:null, dropPlat:null
     };
     troopers = []; pickups = []; bolts = []; sparks = []; saberTrail = [];
     rings = []; thrown = null; props = [];
@@ -1170,7 +1171,11 @@
     p.prevJump = keys.jump;
     if (p.onGround) p.airUsed = false;
     if (jumpEdge){
-      if (p.onGround){ p.vy = -JUMP; p.onGround=false; Snd.jump(); }
+      if (p.onGround && keys.down && p.onOneWay && p.standPlat){
+        // Bas + saut sur une plateforme fine → se laisser tomber à travers
+        p.dropPlat = p.standPlat; p.onGround=false; p.vy = 1.6;
+        spark(p.x+p.w/2, p.y+p.h, '#88a0d8', 5); Snd.jump();
+      } else if (p.onGround){ p.vy = -JUMP; p.onGround=false; Snd.jump(); }
       else if (!p.airUsed && !p.diving){
         p.airUsed = true; p.rolling = ROLL_DUR;
         const dir = keys.left ? -1 : keys.right ? 1 : p.face;
@@ -1188,15 +1193,21 @@
     if (p.x+p.w>LEVEL_W) p.x=LEVEL_W-p.w;
 
     p.y += p.vy;
-    p.onGround=false;
+    p.onGround=false; p.onOneWay=false;
+    let landPlat=null;
     for (const pl of platforms){
+      if (pl === p.dropPlat) continue;   // plateforme qu'on traverse volontairement
+      const oneWay = pl.h < 24;          // les plateformes fines sont franchissables par le bas
       if (p.x+p.w>pl.x && p.x<pl.x+pl.w){
         if (p.vy>=0 && p.y+p.h>pl.y && p.y+p.h < pl.y+pl.h+14 &&
             p.y+p.h-p.vy <= pl.y+1){
-          p.y = pl.y-p.h; p.vy=0; p.onGround=true;
+          p.y = pl.y-p.h; p.vy=0; p.onGround=true; p.onOneWay=oneWay; landPlat=pl;
         }
       }
     }
+    p.standPlat = landPlat;
+    // on relâche la plateforme traversée une fois complètement passé dessous
+    if (p.dropPlat && p.y > p.dropPlat.y + p.dropPlat.h) p.dropPlat = null;
 
     // Énergie de Force (régénération lente)
     p.energy = Math.min(p.energyMax, p.energy + 0.06 + save.upForce*0.02);
@@ -2080,8 +2091,8 @@
       ctx.fillText('ARÈNE — RECORD : VAGUE '+save.bestWave, W/2, 144);
     }
     ctx.fillStyle='#546a94'; ctx.font='7px "Courier New"';
-    ctx.fillText('← → bouger · ESPACE saut (×2 roulade) · J frapper · ↓+J piqué', W/2, 158);
-    ctx.fillText('K pouvoir · L lame boomerang · M son', W/2, 168);
+    ctx.fillText('← → bouger · ESPACE saut (×2 roulade) · J frapper · ↓+J piqué', W/2, 156);
+    ctx.fillText('↓+ESPACE descendre d\'une plateforme · K pouvoir · L lame · M son', W/2, 166);
     ctx.textAlign='left';
     zone(0, 0, W, H, gotoSelect);
   }
